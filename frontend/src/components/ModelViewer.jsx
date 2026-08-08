@@ -239,7 +239,9 @@ export default function ModelViewer({ modelSpec }) {
     key.shadow.mapSize.set(1024, 1024);
     key.shadow.radius = 3;
     scene.add(key);
-    scene.add(Object.assign(new THREE.DirectionalLight(0x88aacc, 0.3), { position: new THREE.Vector3(-3, 2, -2) }));
+    const fill = new THREE.DirectionalLight(0x88aacc, 0.3);
+fill.position.set(-3, 2, -2);
+scene.add(fill);
     scene.add(new THREE.AmbientLight(0x404850, 0.5));
 
     const group = new THREE.Group();
