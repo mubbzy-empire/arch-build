@@ -28,6 +28,25 @@ export default function Results() {
     }
   }, [params.id]);
 
+  const exportDetails = () => {
+    const payload = {
+      title: result.title, category: result.category, summary: result.summary,
+      dimensions: result.dimensions, materials: result.materials,
+      equipment: result.equipment, steps: result.steps, modelSpec: result.modelSpec,
+      exportedFrom: 'ArchVision', exportedAt: new Date().toISOString(),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(result.title || 'archvision-project').replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+
   if (loading) {
     return (
       <div className="screen">
@@ -63,7 +82,10 @@ export default function Results() {
 
           {result.renderImagePath && (
             <div className="panel bracket" style={{ padding: 0, overflow: 'hidden' }}>
-              <div style={{ padding: '12px 14px 0' }}><span className="eyebrow">AI concept render</span></div>
+              <div style={{ padding: '12px 14px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span className="eyebrow">AI concept render</span>
+                <a href={result.renderImagePath} download className="btn btn-ghost" style={{ padding: '4px 8px', fontSize: 12 }}>Download image</a>
+              </div>
               <img src={result.renderImagePath} alt={`Photorealistic concept render of ${result.title || 'the design'}`} style={{ display: 'block', width: '100%', marginTop: 10 }} />
               <p className="page-sub" style={{ padding: '10px 14px 14px', fontSize: 12.5 }}>
                 AI-generated stylized visualization — a design reference, not an exact match to the editable 3D model above.
@@ -80,6 +102,8 @@ export default function Results() {
           <EquipmentCard equipment={result.equipment} />
           <StepsCard steps={result.steps} />
           <BudgetEstimator project={result} />
+
+          <button className="btn btn-secondary btn-block" onClick={exportDetails}>Export project details (.json)</button>
 
           <div style={{ display: 'flex', gap: 10 }}>
             <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => navigate('/chat', { state: { seed: result.title } })}>Refine in chat</button>

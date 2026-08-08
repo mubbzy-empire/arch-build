@@ -39,6 +39,8 @@ db.exec(`
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
     budget REAL,
+    location TEXT,
+    currency TEXT,
     materials_low REAL,
     materials_high REAL,
     labor_low REAL,
@@ -55,6 +57,8 @@ db.exec(`
 // run every startup — SQLite errors if the column already exists, ignored.
 for (const stmt of [
   'ALTER TABLE projects ADD COLUMN render_image_path TEXT',
+  'ALTER TABLE estimates ADD COLUMN location TEXT',
+  'ALTER TABLE estimates ADD COLUMN currency TEXT',
 ]) {
   try { db.exec(stmt); } catch (e) { /* already exists */ }
 }

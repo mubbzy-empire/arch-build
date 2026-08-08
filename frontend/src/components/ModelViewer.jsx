@@ -4,6 +4,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { Brush, Evaluator, SUBTRACTION } from 'three-bvh-csg';
 
 const MATERIAL_COLORS = { wood: 0xb98a55, metal: 0xaab2bd, glass: 0x8fd0e0, fabric: 0x6f6a63 };
@@ -173,16 +174,19 @@ function buildHollowShell(structurePart, openingParts) {
   return { shellMesh: shellBrush, fillMeshes };
 }
 
-export default function ModelViewer({ modelSpec }) {
+export default function ModelViewer({ modelSpec, title }) {
   const mountRef = useRef(null);
   const [wireframe, setWireframe] = useState(false);
   const [hideRoof, setHideRoof] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [selectedLabel, setSelectedLabel] = useState(null);
   const [colorOverrides, setColorOverrides] = useState({});
+  const [buildError, setBuildError] = useState(null);
+  const [storyView, setStoryView] = useState(false);
   const meshesRef = useRef([]);
   const transformRef = useRef(null);
   const sceneRef = useRef(null);
+  const groupRef = useRef(null);
   const editModeRef = useRef(false);
 
   const parts = modelSpec?.parts || [];
@@ -191,12 +195,18 @@ export default function ModelViewer({ modelSpec }) {
     const seen = new Set(parts.map(p => p.group || 'structure'));
     return ['structure', 'roof', 'door', 'window', 'interior', 'furniture'].filter(g => seen.has(g));
   }, [modelSpec]);
+  const presentFloors = useMemo(() => {
+    const seen = new Set(parts.filter(p => p.group === 'structure' || !p.group).map(p => p.floor ?? 1));
+    return [...seen].sort((a, b) => a - b);
+  }, [modelSpec]);
 
   useEffect(() => {
     setHideRoof(false);
     setColorOverrides({});
     setEditMode(false);
     setSelectedLabel(null);
+    setBuildError(null);
+    setStoryView(false);
   }, [modelSpec]);
 
   useEffect(() => { editModeRef.current = editMode; }, [editMode]);
@@ -205,176 +215,215 @@ export default function ModelViewer({ modelSpec }) {
     const mount = mountRef.current;
     if (!mount) return;
 
-    const width = mount.clientWidth;
-    const height = mount.clientHeight;
+    // Everything below can throw (WebGL init, CSG boolean ops on unusual AI
+    // output, etc). If it does, show a readable in-viewer error instead of
+    // silently leaving a blank/broken canvas.
+    let cleanup = () => {};
+    try {
+      const width = mount.clientWidth;
+      const height = mount.clientHeight;
 
-    const scene = new THREE.Scene();
-    sceneRef.current = scene;
+      const scene = new THREE.Scene();
+      sceneRef.current = scene;
 
-    const camera = new THREE.PerspectiveCamera(38, width / height, 0.05, 100);
-    camera.position.set(2.4, 1.8, 2.6);
+      const camera = new THREE.PerspectiveCamera(38, width / height, 0.05, 100);
+      camera.position.set(2.4, 1.8, 2.6);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    mount.innerHTML = '';
-    mount.appendChild(renderer.domElement);
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(width, height);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.05;
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      mount.innerHTML = '';
+      mount.appendChild(renderer.domElement);
 
-    const pmremGenerator = new THREE.PMREMGenerator(renderer);
-    scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
-    pmremGenerator.dispose();
+      const pmremGenerator = new THREE.PMREMGenerator(renderer);
+      scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+      pmremGenerator.dispose();
 
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.08;
 
-    const key = new THREE.DirectionalLight(0xffffff, 1.2);
-    key.position.set(3, 5, 2);
-    key.castShadow = true;
-    key.shadow.mapSize.set(1024, 1024);
-    key.shadow.radius = 3;
-    scene.add(key);
-    const fill = new THREE.DirectionalLight(0x88aacc, 0.3);
-fill.position.set(-3, 2, -2);
-scene.add(fill);
-    scene.add(new THREE.AmbientLight(0x404850, 0.5));
+      const key = new THREE.DirectionalLight(0xffffff, 1.2);
+      key.position.set(3, 5, 2);
+      key.castShadow = true;
+      key.shadow.mapSize.set(1024, 1024);
+      key.shadow.radius = 3;
+      scene.add(key);
+      const fill = new THREE.DirectionalLight(0x88aacc, 0.3);
+      fill.position.set(-3, 2, -2);
+      scene.add(fill);
+      scene.add(new THREE.AmbientLight(0x404850, 0.5));
 
-    const group = new THREE.Group();
-    const inputParts = parts.length ? parts : [{ type: 'box', size: [1, 1, 1], position: [0, 0.5, 0], material: 'wood', group: 'structure' }];
+      const group = new THREE.Group();
+      groupRef.current = group;
+      const inputParts = parts.length ? parts : [{ type: 'box', size: [1, 1, 1], position: [0, 0.5, 0], material: 'wood', group: 'structure' }];
 
-    const openingParts = inputParts.filter(p => p.group === 'door' || p.group === 'window');
-    const structureParts = inputParts.filter(p => p.group === 'structure' || !p.group);
-    const otherParts = inputParts.filter(p => p.group && p.group !== 'structure' && p.group !== 'door' && p.group !== 'window');
-    const isBuilding = openingParts.length > 0 && structureParts.length > 0;
+      const openingParts = inputParts.filter(p => p.group === 'door' || p.group === 'window');
+      const structureParts = inputParts.filter(p => p.group === 'structure' || !p.group);
+      const otherParts = inputParts.filter(p => p.group && p.group !== 'structure' && p.group !== 'door' && p.group !== 'window');
 
-    const meshes = [];
-    if (isBuilding) {
-      const [envelope, ...extraStructure] = structureParts;
-      const { shellMesh, fillMeshes } = buildHollowShell(envelope, openingParts);
-      meshes.push(shellMesh, ...fillMeshes);
-      extraStructure.forEach(p => meshes.push(buildMesh(p)));
-    } else {
-      structureParts.forEach(p => meshes.push(buildMesh(p)));
-    }
-    otherParts.forEach(p => meshes.push(buildMesh(p)));
+      // Multi-story support: each structure part may carry a "floor" number
+      // (1 = ground floor, 2 = next up, etc). Every floor's envelope gets
+      // its own independent hollow shell with its own matching door/window
+      // openings — this makes each floor its own selectable, draggable part
+      // in the viewer, so pulling one floor's walls away reveals the rest.
+      const meshes = [];
+      const floorNumbers = [...new Set(structureParts.map(p => p.floor ?? 1))].sort((a, b) => a - b);
+      const isBuilding = openingParts.length > 0 && structureParts.length > 0;
 
-    meshes.forEach(m => group.add(m));
-    meshesRef.current = meshes;
-    scene.add(group);
-
-    const box = new THREE.Box3().setFromObject(group);
-    const size = new THREE.Vector3();
-    const center = new THREE.Vector3();
-    box.getSize(size);
-    box.getCenter(center);
-    const maxDim = Math.max(size.x, size.y, size.z, 0.2);
-    const radius = maxDim / 2;
-
-    camera.near = Math.max(radius / 500, 0.01);
-    camera.far = radius * 60 + 100;
-    camera.updateProjectionMatrix();
-
-    const dist = radius * 2.6;
-    camera.position.set(center.x + dist * 0.65, center.y + dist * 0.5, center.z + dist * 0.7);
-    controls.target.copy(center);
-    controls.minDistance = radius * 0.25;
-    controls.maxDistance = radius * 6;
-    controls.update();
-
-    const gridSize = Math.max(maxDim * 2.5, 4);
-    const grid = new THREE.GridHelper(gridSize, 24, 0x3a4048, 0x1c2027);
-    grid.position.y = box.min.y;
-    scene.add(grid);
-
-    const shadowDisc = new THREE.Mesh(
-      new THREE.PlaneGeometry(maxDim * 1.6, maxDim * 1.6),
-      new THREE.MeshBasicMaterial({ map: getShadowTexture(), transparent: true, depthWrite: false })
-    );
-    shadowDisc.rotation.x = -Math.PI / 2;
-    shadowDisc.position.set(center.x, box.min.y + 0.002, center.z);
-    scene.add(shadowDisc);
-
-    // Click-to-select + drag gizmo (edit mode only), Blender-style.
-    const transformControls = new TransformControls(camera, renderer.domElement);
-    transformControls.setMode('translate');
-    transformControls.setSize(0.9);
-    transformControls.enabled = false;
-    transformControls.visible = false;
-    const gizmoHelper = transformControls.getHelper ? transformControls.getHelper() : transformControls;
-    scene.add(gizmoHelper);
-    transformRef.current = transformControls;
-
-    transformControls.addEventListener('dragging-changed', (e) => { controls.enabled = !e.value; });
-
-    const raycaster = new THREE.Raycaster();
-    const pointerNdc = new THREE.Vector2();
-    let downPos = null;
-
-    const onPointerDown = (e) => { downPos = { x: e.clientX, y: e.clientY }; };
-    const onPointerUp = (e) => {
-      if (!editModeRef.current || transformControls.dragging) return;
-      if (downPos) {
-        const moved = Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y);
-        if (moved > 6) return; // was an orbit drag, not a click
-      }
-      const rect = renderer.domElement.getBoundingClientRect();
-      pointerNdc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      pointerNdc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-      raycaster.setFromCamera(pointerNdc, camera);
-      const hits = raycaster.intersectObjects(meshesRef.current, false);
-      if (hits.length) {
-        const target = hits[0].object;
-        transformControls.attach(target);
-        transformControls.enabled = true;
-        transformControls.visible = true;
-        setSelectedLabel(GROUP_LABELS[target.userData.group] || target.userData.group);
+      if (isBuilding) {
+        floorNumbers.forEach(floorNum => {
+          const floorStructure = structureParts.filter(p => (p.floor ?? 1) === floorNum);
+          const floorOpenings = openingParts.filter(p => (p.floor ?? 1) === floorNum);
+          const [envelope, ...extraStructure] = floorStructure;
+          if (!envelope) return;
+          const { shellMesh, fillMeshes } = buildHollowShell(envelope, floorOpenings);
+          shellMesh.userData.floor = floorNum;
+          fillMeshes.forEach(m => { m.userData.floor = floorNum; });
+          meshes.push(shellMesh, ...fillMeshes);
+          extraStructure.forEach(p => {
+            const m = buildMesh(p);
+            m.userData.floor = floorNum;
+            meshes.push(m);
+          });
+        });
       } else {
-        transformControls.detach();
-        transformControls.enabled = false;
-        transformControls.visible = false;
-        setSelectedLabel(null);
+        structureParts.forEach(p => {
+          const m = buildMesh(p);
+          m.userData.floor = p.floor ?? 1;
+          meshes.push(m);
+        });
       }
-    };
-    renderer.domElement.addEventListener('pointerdown', onPointerDown);
-    renderer.domElement.addEventListener('pointerup', onPointerUp);
+      otherParts.forEach(p => {
+        const m = buildMesh(p);
+        m.userData.floor = p.floor ?? 1;
+        m.userData.room = p.room || null;
+        meshes.push(m);
+      });
 
-    let frameId;
-    const animate = () => {
-      frameId = requestAnimationFrame(animate);
-      if (!transformControls.dragging) group.rotation.y += editModeRef.current ? 0 : 0.0025;
-      controls.update();
-      renderer.render(scene, camera);
-    };
-    animate();
+      meshes.forEach(m => group.add(m));
+      meshesRef.current = meshes;
+      scene.add(group);
 
-    const handleResize = () => {
-      const w = mount.clientWidth;
-      const h = mount.clientHeight;
-      camera.aspect = w / h;
+      const box = new THREE.Box3().setFromObject(group);
+      const size = new THREE.Vector3();
+      const center = new THREE.Vector3();
+      box.getSize(size);
+      box.getCenter(center);
+      const maxDim = Math.max(size.x, size.y, size.z, 0.2);
+      const radius = maxDim / 2;
+
+      camera.near = Math.max(radius / 500, 0.01);
+      camera.far = radius * 60 + 100;
       camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
-    };
-    window.addEventListener('resize', handleResize);
 
-    return () => {
-      cancelAnimationFrame(frameId);
-      window.removeEventListener('resize', handleResize);
-      renderer.domElement.removeEventListener('pointerdown', onPointerDown);
-      renderer.domElement.removeEventListener('pointerup', onPointerUp);
-      transformControls.dispose();
-      controls.dispose();
-      renderer.dispose();
-      scene.environment?.dispose?.();
-      shadowDisc.geometry.dispose();
-      shadowDisc.material.dispose();
-      meshes.forEach(m => { m.geometry.dispose(); m.material.dispose(); });
-      if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement);
-    };
+      const dist = radius * 2.6;
+      camera.position.set(center.x + dist * 0.65, center.y + dist * 0.5, center.z + dist * 0.7);
+      controls.target.copy(center);
+      controls.minDistance = radius * 0.25;
+      controls.maxDistance = radius * 6;
+      controls.update();
+
+      const gridSize = Math.max(maxDim * 2.5, 4);
+      const grid = new THREE.GridHelper(gridSize, 24, 0x3a4048, 0x1c2027);
+      grid.position.y = box.min.y;
+      scene.add(grid);
+
+      const shadowDisc = new THREE.Mesh(
+        new THREE.PlaneGeometry(maxDim * 1.6, maxDim * 1.6),
+        new THREE.MeshBasicMaterial({ map: getShadowTexture(), transparent: true, depthWrite: false })
+      );
+      shadowDisc.rotation.x = -Math.PI / 2;
+      shadowDisc.position.set(center.x, box.min.y + 0.002, center.z);
+      scene.add(shadowDisc);
+
+      // Click-to-select + drag gizmo (edit mode only), Blender-style.
+      const transformControls = new TransformControls(camera, renderer.domElement);
+      transformControls.setMode('translate');
+      transformControls.setSize(0.9);
+      transformControls.enabled = false;
+      transformControls.visible = false;
+      const gizmoHelper = transformControls.getHelper ? transformControls.getHelper() : transformControls;
+      scene.add(gizmoHelper);
+      transformRef.current = transformControls;
+
+      transformControls.addEventListener('dragging-changed', (e) => { controls.enabled = !e.value; });
+
+      const raycaster = new THREE.Raycaster();
+      const pointerNdc = new THREE.Vector2();
+      let downPos = null;
+
+      const onPointerDown = (e) => { downPos = { x: e.clientX, y: e.clientY }; };
+      const onPointerUp = (e) => {
+        if (!editModeRef.current || transformControls.dragging) return;
+        if (downPos) {
+          const moved = Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y);
+          if (moved > 6) return; // was an orbit drag, not a click
+        }
+        const rect = renderer.domElement.getBoundingClientRect();
+        pointerNdc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        pointerNdc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(pointerNdc, camera);
+        const hits = raycaster.intersectObjects(meshesRef.current, false);
+        if (hits.length) {
+          const target = hits[0].object;
+          transformControls.attach(target);
+          transformControls.enabled = true;
+          transformControls.visible = true;
+          setSelectedLabel(GROUP_LABELS[target.userData.group] || target.userData.group);
+        } else {
+          transformControls.detach();
+          transformControls.enabled = false;
+          transformControls.visible = false;
+          setSelectedLabel(null);
+        }
+      };
+      renderer.domElement.addEventListener('pointerdown', onPointerDown);
+      renderer.domElement.addEventListener('pointerup', onPointerUp);
+
+      let frameId;
+      const animate = () => {
+        frameId = requestAnimationFrame(animate);
+        if (!transformControls.dragging) group.rotation.y += editModeRef.current ? 0 : 0.0025;
+        controls.update();
+        renderer.render(scene, camera);
+      };
+      animate();
+
+      const handleResize = () => {
+        const w = mount.clientWidth;
+        const h = mount.clientHeight;
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        renderer.setSize(w, h);
+      };
+      window.addEventListener('resize', handleResize);
+
+      cleanup = () => {
+        cancelAnimationFrame(frameId);
+        window.removeEventListener('resize', handleResize);
+        renderer.domElement.removeEventListener('pointerdown', onPointerDown);
+        renderer.domElement.removeEventListener('pointerup', onPointerUp);
+        transformControls.dispose();
+        controls.dispose();
+        renderer.dispose();
+        scene.environment?.dispose?.();
+        shadowDisc.geometry.dispose();
+        shadowDisc.material.dispose();
+        meshes.forEach(m => { m.geometry.dispose(); m.material.dispose(); });
+        if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement);
+      };
+    } catch (err) {
+      console.error('ModelViewer failed to build the 3D scene:', err);
+      setBuildError(err.message || String(err));
+    }
+
+    return () => cleanup();
   }, [modelSpec]);
 
   useEffect(() => {
@@ -411,7 +460,57 @@ scene.add(fill);
       transformRef.current.visible = false;
     }
     setSelectedLabel(null);
+    setStoryView(false);
   };
+
+  const toggleStoryView = () => {
+    const GAP = 1.6; // meters of extra vertical separation per floor above ground
+    const next = !storyView;
+    meshesRef.current.forEach(m => {
+      const floor = m.userData.floor ?? 1;
+      const delta = (floor - 1) * GAP;
+      if (delta === 0) return;
+      m.position.y += next ? delta : -delta;
+    });
+    setStoryView(next);
+  };
+
+  const exportGLB = () => {
+    if (!groupRef.current) return;
+    const filename = `${(title || 'archvision-model').toString().replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.glb`;
+    new GLTFExporter().parse(
+      groupRef.current,
+      (result) => {
+        const blob = new Blob([result], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      },
+      (err) => console.error('GLB export failed:', err),
+      { binary: true }
+    );
+  };
+
+  if (buildError) {
+    return (
+      <div className="viewer-shell" style={{ minHeight: 220, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+        <div style={{ maxWidth: 420 }}>
+          <p className="eyebrow">3D preview couldn't render</p>
+          <p className="page-sub" style={{ marginTop: 10, fontFamily: 'var(--font-mono)', fontSize: 12, wordBreak: 'break-word' }}>
+            {buildError}
+          </p>
+          <p className="page-sub" style={{ marginTop: 10 }}>
+            Screenshot this message and send it back — the rest of the design details below are unaffected.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="viewer-shell">
@@ -430,8 +529,14 @@ scene.add(fill);
             {hideRoof ? 'Show roof' : 'Interior view'}
           </button>
         )}
+        {presentFloors.length > 1 && (
+          <button className={storyView ? 'active' : ''} onClick={toggleStoryView}>
+            {storyView ? 'Stack floors' : 'Separate floors'}
+          </button>
+        )}
         <button className={!wireframe ? 'active' : ''} onClick={() => setWireframe(false)}>Solid</button>
         <button className={wireframe ? 'active' : ''} onClick={() => setWireframe(true)}>Wireframe</button>
+        <button onClick={exportGLB} title="Download as a .glb 3D file — opens in Blender and most 3D software">Export .glb</button>
       </div>
       {presentGroups.length > 0 && (
         <div className="color-row">

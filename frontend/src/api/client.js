@@ -31,13 +31,14 @@ export async function sendChatMessage(message, history, projectId) {
   return res.json();
 }
 
-export async function getCostEstimate(project, budget) {
+export async function getCostEstimate(project, budget, location) {
   const res = await fetch(`${BASE}/estimate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       projectId: project.id,
       budget,
+      location,
       title: project.title,
       summary: project.summary,
       materials: project.materials,

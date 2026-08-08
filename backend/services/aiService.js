@@ -39,21 +39,21 @@ Respond with ONLY valid JSON (no markdown fences, no commentary) matching exactl
   "steps": [ "short build step 1", "short build step 2", ... 4-6 items ],
   "modelSpec": {
     "parts": [
-      {"type":"box","size":[width,height,depth],"position":[x,y,z],"material":"wood|metal|glass|fabric","color":"#hexcode (optional)","group":"structure|roof|window|door|interior|furniture"},
-      {"type":"cylinder","radiusTop":r,"radiusBottom":r,"height":h,"position":[x,y,z],"material":"wood|metal|glass|fabric","color":"#hexcode (optional)","group":"structure|roof|window|door|interior|furniture"}
+      {"type":"box","size":[width,height,depth],"position":[x,y,z],"material":"wood|metal|glass|fabric","color":"#hexcode (optional)","group":"structure|roof|window|door|interior|furniture","floor":1,"room":"optional short room name e.g. 'Parlor'"},
+      {"type":"cylinder","radiusTop":r,"radiusBottom":r,"height":h,"position":[x,y,z],"material":"wood|metal|glass|fabric","color":"#hexcode (optional)","group":"structure|roof|window|door|interior|furniture","floor":1,"room":"optional short room name"}
     ]
   }
 }
 Every part needs a "group" tag:
-- "structure": for buildings, exactly ONE box representing the outer building envelope (true exterior width/height/depth) — the viewer automatically turns this into real hollow walls with real door/window openings cut through it, so don't add separate wall boxes yourself. For furniture/objects, used normally for legs, frame, body, etc.
-- "roof": roof/lid/top-cover geometry, its own separate part(s) so it can be toggled off in the viewer.
-- "window": for buildings, becomes a REAL cut-through opening with glass filling it. Width ~0.9-1.5m, height ~1-1.4m, positioned at its center point on the relevant wall's outer face. At least 3-5 across different walls for a house.
-- "door": for buildings, becomes a REAL cut-through opening with a door panel filling it. ~0.8-1.0m wide, ~2.0-2.1m tall, base touching the floor (y starting at 0). At least one required.
-- "interior": floor slab, and for multi-room buildings, simple thin partition walls dividing space roughly per room.
-- "furniture": ${furnish ? 'REQUIRED for houses/rooms — add realistic furniture and fixtures per room (beds, sofas, tables, chairs, kitchen counters, etc.) sized and positioned sensibly within the interior, each with a fitting "color" so the space reads as a warm, professionally decorated home once furnished. Add at least 6-14 furniture parts across the rooms for a house.' : 'do not use this group — do not invent furniture that was not shown in the source material; only include structural/fixed elements actually present.'}
-The optional "color" field is a specific hex color (e.g. "#3a5f7d") you choose because it suits the design — used instead of the generic material default. Use it thoughtfully and vary it across parts for a designed, non-monotone look, especially for furniture and interior surfaces. Never use gradients — one flat, considered color per part.
-Never represent the object as a single primitive — a lone box or cylinder is never an acceptable answer. Break every object into the distinct parts a builder would actually assemble. Buildings must include exactly one "structure" envelope box, a "roof" group, several "window" openings, at least one "door" opening, and "interior" parts (floor + room dividers) — never a single flat-topped box, and never extra solid wall boxes alongside the structure envelope since that would block the cutouts.
-Keep "parts" between 3 and 30 primitives (furnished houses need the higher end) using meters, centered around x=0, resting on y=0 upward.
+- "structure": the building envelope. If the building is a SINGLE story, exactly ONE box for the whole envelope. If it has MULTIPLE stories/floors (e.g. described as two-story, a penthouse atop other floors, an apartment building), create ONE separate structure box PER FLOOR, each stacked at the correct height and each tagged with its own "floor" number (1 = ground floor, 2 = next floor up, etc.) — the viewer turns each floor's envelope into its own real hollow walls with door/window cutouts, and makes each floor independently selectable and draggable so a person can pull one floor away to inspect the others. Never add separate wall boxes alongside a structure envelope — the viewer builds the walls automatically from it.
+- "roof": roof/lid/top-cover geometry on the topmost floor, its own separate part(s) so it can be toggled off.
+- "window": becomes a REAL cut-through opening with glass filling it. Width ~0.9-1.5m, height ~1-1.4m. At least 3-5 per floor across different walls for a house. Tag with the matching "floor" number of the wall it belongs to.
+- "door": becomes a REAL cut-through opening with a door panel filling it. ~0.8-1.0m wide, ~2.0-2.1m tall, base at y=0 relative to its floor. At least one exterior door on the ground floor. Tag with the matching "floor" number.
+- "interior": a floor slab per story, plus REAL ROOM PLANNING via partition walls — this is required, not optional. Based on the building's description and category, lay out distinct, fully-enclosed rooms appropriate to it (for a home: a living room/parlor, a dining area, a kitchen, at least one bathroom, and one bedroom per bedroom described) using partition walls that connect on at least two sides so each room reads as a real separate space, not just a single divider line down the middle. Tag each interior part with the "room" it belongs to (e.g. "Parlor", "Dining Room", "Bathroom", "Bedroom 1") and the correct "floor" number.
+- "furniture": ${furnish ? 'REQUIRED — furnish every room appropriately for what it is: sofa/coffee table/TV console for a living room or parlor, table and chairs for a dining room, counters/island for a kitchen, toilet/sink/tub blocks for a bathroom, bed/wardrobe/nightstand for a bedroom. Give each piece a fitting "color" so the space reads as warm and professionally decorated, and tag each with the matching "room" and "floor". Add at least 3-5 furniture parts per room.' : 'do not use this group — do not invent furniture that was not shown in the source material; only include structural/fixed elements actually present.'}
+The optional "color" field is a specific hex color (e.g. "#3a5f7d") you choose because it suits the design — used instead of the generic material default. Vary it thoughtfully across parts for a designed, non-monotone look. Never use gradients — one flat, considered color per part.
+Never represent the object as a single primitive. Break every object into the distinct parts a builder would actually assemble. Buildings must include one "structure" envelope per floor, a "roof" group, several "window" openings, at least one "door" opening, and genuinely room-planned "interior" + "furniture" parts as described above — never a single flat-topped box, and never a single undivided open interior for anything larger than a one-room structure.
+Keep "parts" between 3 and 50 primitives (furnished multi-room, multi-story buildings need the higher end) using meters, centered around x=0, resting on y=0 upward, with floor 1 starting at y=0 and each additional floor stacked directly on top of the one below.
 `.trim();
 }
 
@@ -386,23 +386,25 @@ async function generateRenderImage({ title, summary, materials }) {
 // falls back to reasoning-only AI estimate, then a rough offline formula.
 // Always clearly labeled to the user as an approximation either way.
 // ---------------------------------------------------------------------------
-async function generateCostEstimate({ title, summary, materials, equipment, dimensions, budget }) {
+async function generateCostEstimate({ title, summary, materials, equipment, dimensions, budget, location }) {
   const materialList = (materials || []).map(m => m.name).join(', ');
   const equipmentList = (equipment || []).map(e => e.name).join(', ');
   const dimensionList = (dimensions || []).map(d => `${d.label}: ${d.value}`).join(', ');
-  const basePrompt = `You are a construction cost estimator. Project: "${title}". ${summary} Dimensions: ${dimensionList}. Materials: ${materialList}. Equipment/labor involved: ${equipmentList}. ${budget ? `The person's stated budget is $${budget}.` : 'No budget was given.'}
-Give a realistic, current, rough-order-of-magnitude cost estimate for a typical US project of this kind. Respond with ONLY valid JSON, no markdown fences, no commentary, in this exact shape:
+  const basePrompt = `You are a construction cost estimator. Project: "${title}". ${summary} Dimensions: ${dimensionList}. Materials: ${materialList}. Equipment/labor involved: ${equipmentList}. ${budget ? `The person's stated budget is ${budget}.` : 'No budget was given.'} ${location ? `The project location is: ${location}. Use realistic costs and typical pricing for that specific location, and give the estimate in that location's local currency.` : 'No location was given — estimate for a typical US project and use USD.'}
+Give a realistic, current, rough-order-of-magnitude cost estimate. Respond with ONLY valid JSON, no markdown fences, no commentary, in this exact shape:
 {
+  "currency": "3-letter ISO currency code appropriate for the location, e.g. USD, NGN, GBP, EUR, INR",
+  "currencySymbol": "the common symbol or prefix for that currency, e.g. $, \u20a6, \u00a3, \u20ac, \u20b9",
   "materialsLow": number, "materialsHigh": number,
   "laborLow": number, "laborHigh": number,
   "timeline": "short human-readable estimate, e.g. '4-6 months'",
-  "budgetNote": "1-2 sentences directly addressing whether the stated budget is realistic for this scope, or general advice if no budget was given",
-  "notes": "1-2 sentences on what most affects the price range (region, finish level, etc.)"
+  "budgetNote": "1-2 sentences directly addressing whether the stated budget is realistic for this scope and location, or general advice if no budget was given",
+  "notes": "1-2 sentences on what most affects the price range for this location (import costs, local labor rates, finish level, etc.)"
 }
-All numbers in USD, no currency symbols or commas, just plain numbers.`;
+All numbers are plain numbers in the chosen local currency, no symbols or commas.`;
 
   if (genAI) {
-    // Attempt 1: with Google Search grounding for more current figures.
+    // Attempt 1: with Google Search grounding for more current, location-aware figures.
     try {
       const response = await genAI.models.generateContent({
         model: TEXT_MODEL,
@@ -425,6 +427,8 @@ All numbers in USD, no currency symbols or commas, just plain numbers.`;
   }
 
   // Offline fallback: rough area-based US formula, clearly approximate.
+  // No AI reasoning available offline, so this always estimates in USD
+  // regardless of location — noted plainly to the person in budgetNote.
   const widthMatch = (dimensions || []).find(d => /width/i.test(d.label));
   const depthMatch = (dimensions || []).find(d => /depth/i.test(d.label));
   const width = widthMatch ? parseFloat(widthMatch.value) : 10;
@@ -432,14 +436,17 @@ All numbers in USD, no currency symbols or commas, just plain numbers.`;
   const sqm = (isFinite(width) ? width : 10) * (isFinite(depth) ? depth : 8);
   const sqft = sqm * 10.76;
   return {
+    currency: 'USD',
+    currencySymbol: '$',
     materialsLow: Math.round(sqft * 90),
     materialsHigh: Math.round(sqft * 160),
     laborLow: Math.round(sqft * 60),
     laborHigh: Math.round(sqft * 110),
     timeline: sqft > 1500 ? '6-10 months' : '3-6 months',
-    budgetNote: budget
-      ? 'This offline estimate is a rough national average formula, not a live market lookup — connect a Gemini API key for a more informed estimate, and always get local contractor quotes.'
-      : 'Add a budget above for a direct comparison. This is a rough national average, not a live estimate — connect a Gemini API key for better figures.',
+    budgetNote: (location
+      ? `This offline formula always estimates in USD and can't account for ${location} specifically — connect a Gemini API key for a location-aware, local-currency estimate. `
+      : 'Add a budget and location above for a direct, location-aware comparison. ') +
+      'This is a rough national average, not a live estimate — always get local contractor quotes.',
     notes: 'Offline formula based on typical US per-square-foot ranges; actual costs vary heavily by region, finish level, and site conditions.',
     grounded: false,
     engine: 'offline',
