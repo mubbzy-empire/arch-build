@@ -18,6 +18,12 @@ const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 // free-tier model names and update here — the offline engine keeps the app
 // working in the meantime either way.
 const TEXT_MODEL = 'gemini-3.1-flash-lite';
+// Blueprint reading is a precision task (real dimensions, real wall/room
+// layout) rather than a creative one, so it gets the stronger non-lite
+// Flash model — still free-tier, just more capable at careful spatial
+// reading of a photographed/scanned drawing than the lite text model used
+// for open-ended chat/estate generation.
+const VISION_MODEL = 'gemini-3.6-flash';
 const IMAGE_MODEL = 'gemini-2.5-flash-image';
 
 const genAI = GEMINI_KEY ? new GoogleGenAI({ apiKey: GEMINI_KEY }) : null;
@@ -40,16 +46,18 @@ Respond with ONLY valid JSON (no markdown fences, no commentary) matching exactl
   "modelSpec": {
     "parts": [
       {"type":"box","size":[width,height,depth],"position":[x,y,z],"material":"wood|metal|glass|fabric","color":"#hexcode (optional)","group":"structure|roof|window|door|interior|furniture","floor":1,"room":"optional short room name e.g. 'Parlor'"},
-      {"type":"cylinder","radiusTop":r,"radiusBottom":r,"height":h,"position":[x,y,z],"material":"wood|metal|glass|fabric","color":"#hexcode (optional)","group":"structure|roof|window|door|interior|furniture","floor":1,"room":"optional short room name"}
+      {"type":"cylinder","radiusTop":r,"radiusBottom":r,"height":h,"position":[x,y,z],"material":"wood|metal|glass|fabric","color":"#hexcode (optional)","group":"structure|roof|window|door|interior|furniture","floor":1,"room":"optional short room name"},
+      {"group":"roof","roofStyle":"hip|gable|flat|shed","pitch":0.35,"overhang":0.35,"material":"metal|wood","color":"#hexcode","floor":1}
     ]
   }
 }
 Every part needs a "group" tag:
 - "structure": the building envelope. Its own "material" must be "wood", "metal", or "fabric" — NEVER "glass", even for designs described as glassy/floor-to-ceiling windows (represent that with more/larger "window" parts instead; a glass envelope makes the whole building see-through, which is wrong). If the building is a SINGLE story, exactly ONE box for the whole envelope. If it has MULTIPLE stories/floors (e.g. described as two-story, a penthouse atop other floors, an apartment building), create ONE separate structure box PER FLOOR, each stacked at the correct height and each tagged with its own "floor" number (1 = ground floor, 2 = next floor up, etc.) — the viewer turns each floor's envelope into its own real hollow walls with door/window cutouts, and makes each floor independently selectable and draggable so a person can pull one floor away to inspect the others. Every floor needs its own full room layout (not just the ground floor). Never add separate wall boxes alongside a structure envelope — the viewer builds the walls automatically from it.
-- "roof": roof/lid/top-cover geometry on the topmost floor, its own separate part(s) so it can be toggled off.
-- "window": becomes a REAL cut-through opening with glass filling it. Width ~0.9-1.5m, height ~1-1.4m. At least 3-5 per floor across different walls for a house. Tag with the matching "floor" number of the wall it belongs to.
+- "roof": use the SIMPLE roof contract shown above — do NOT hand-place a box/cylinder for the roof. Give ONLY: "roofStyle" (one of "hip", "gable", "flat", "shed" — pick "flat" for anything described as modern/minimalist/contemporary-flat-roofed, "gable" for anything described as pitched/A-frame/traditional-peaked/cabin-style, "shed" for a single mono-pitch lean-to roof, "hip" as the general-purpose default for most houses), "pitch" (roof steepness as rise/run, 0.15=very shallow to 0.9=very steep, 0.35-0.45 is typical), "overhang" (eave overhang in meters past the walls, 0.3-0.6 typical), "material", "color", and "floor" (which floor's envelope it sits on — normally the topmost floor). The renderer computes the actual roof geometry itself, sized exactly to that floor's real envelope — do not, and cannot, get this wrong, so do not add "size" or "position" to a roof part.
+- "window": becomes a REAL cut-through opening with a frame, glass, and (on larger windows) a mullion bar automatically added — you only specify the opening. Width ~0.9-1.5m, height ~1-1.4m. At least 3-5 per floor across different walls for a house. Tag with the matching "floor" number of the wall it belongs to.
 - "door": becomes a REAL cut-through opening with a door panel filling it. ~0.8-1.0m wide, ~2.0-2.1m tall, base at y=0 relative to its floor. At least one exterior door on the ground floor. Tag with the matching "floor" number.
 - "interior": a floor slab per story, PLUS mandatory partition walls that physically divide the floor into distinct enclosed rooms — this is the single most important part of a good response, do not skip or minimize it. First mentally list the rooms this floor needs (a home needs, at minimum: one living/parlor room, one kitchen, one bathroom/toilet, and one bedroom per bedroom described — plus a dining area, garage, or terrace if mentioned), then output real partition wall boxes that physically separate every one of those rooms from its neighbors (walls on at least 2-3 sides per room, not a single line down the middle). A floor with fewer than (room count − 1) × 2 partition wall parts is not acceptable. Tag each with the "room" it belongs to (e.g. "Parlor", "Kitchen", "Toilet", "Bedroom 1", "Garage") and the correct "floor".
+  CRITICAL — every partition must have a real doorway opening, never a solid uninterrupted wall: whenever a partition wall would run the full distance between two other walls, split it into TWO separate shorter "interior" box parts placed end-to-end with a gap of about 0.8-1.0m left empty between them (that gap is the doorway — leave it as empty space, do not fill it with anything). Every enclosed room needs at least one such gap in one of its walls connecting it to a hallway or an adjacent room, so a person walking through the model can pass from room to room instead of finding every room sealed shut. Do not center every gap in the middle of its wall — offset most of them toward one end so they don't all form one straight corridor down the center of the building.
 - "furniture": ${furnish ? 'REQUIRED — furnish every room appropriately for what it is: sofa/coffee table/TV console for a living room or parlor, table and chairs for a dining room, counters/island for a kitchen, toilet/sink/tub blocks for a bathroom, bed/wardrobe/nightstand for a bedroom, workbench or storage for a garage. Give each piece a fitting "color" so the space reads as warm and professionally decorated, and tag each with the matching "room" and "floor". Add at least 3-5 furniture parts per room — a room with zero furniture is not acceptable.' : 'do not use this group — do not invent furniture that was not shown in the source material; only include structural/fixed elements actually present.'}
 The optional "color" field is a specific hex color (e.g. "#3a5f7d") you choose because it suits the design — used instead of the generic material default. Vary it thoughtfully across parts for a designed, non-monotone look. Never use gradients — one flat, considered color per part.
 Never represent the object as a single primitive. Break every object into the distinct parts a builder would actually assemble. Buildings must include one "structure" envelope per floor, a "roof" group, several "window" openings, at least one "door" opening, and genuinely room-planned "interior" + "furniture" parts as described above — never a single flat-topped box, and never a single undivided open interior for anything larger than a one-room structure. A response that just adds one or two stray divider walls without enclosing real, separate, named rooms is a failing response — plan the full room layout before writing the parts list.
@@ -80,6 +88,18 @@ function reinforceDesign(result, { furnish }) {
   if (!isBuildingLike) return result;
 
   const floors = [...new Set(spec.parts.filter(p => p.group === 'structure').map(p => p.floor ?? 1))];
+
+  // Roof safety net: if the AI dropped the roof entirely, or fell back to
+  // the old free-form box/cylinder shape instead of the roofStyle contract,
+  // replace/add a sane default per floor that actually has a structure
+  // envelope to sit on — real geometry beats a missing or malformed roof.
+  const topFloorNum = floors.length ? Math.max(...floors) : 1;
+  spec.parts = spec.parts.filter(p => !(p.group === 'roof' && !p.roofStyle));
+  const hasStyledRoof = spec.parts.some(p => p.group === 'roof' && p.roofStyle);
+  if (!hasStyledRoof && floors.length) {
+    spec.parts.push({ group: 'roof', roofStyle: 'hip', pitch: 0.4, overhang: 0.4, material: 'metal', color: '#5a4a3a', floor: topFloorNum });
+  }
+
   const palette = ['#8a6d5c', '#5c7a6d', '#7a5230', '#6d5c8a', '#a08a5c', '#5c8a76'];
   let paletteIdx = 0;
   let addedAny = false;
@@ -106,15 +126,42 @@ function reinforceDesign(result, { furnish }) {
     const colW = w / cols;
     const rowD = d / rows;
 
+    // Pushes a partition segment as two shorter boxes with a gap between
+    // them — a real doorway opening — instead of one unbroken wall, so
+    // every room this partition encloses still has a way through to its
+    // neighbor. Falls back to one solid segment only if the wall is too
+    // short to fit a doorway.
+    const doorGap = 0.9;
+    const pushGappedPartition = (isVertical, fixed, spanStart, spanLen, gapFrac) => {
+      const gapCenter = spanStart + spanLen * gapFrac;
+      const gapStart = gapCenter - doorGap / 2;
+      const gapEnd = gapCenter + doorGap / 2;
+      const seg1Len = gapStart - spanStart;
+      const seg2Len = (spanStart + spanLen) - gapEnd;
+      if (seg1Len < 0.6 || seg2Len < 0.6) {
+        const size = isVertical ? [thickness, wallH, spanLen] : [spanLen, wallH, thickness];
+        const position = isVertical ? [fixed, wallY, spanStart + spanLen / 2] : [spanStart + spanLen / 2, wallY, fixed];
+        spec.parts.push({ type: 'box', size, position, material: 'wood', color: '#d8cdb8', group: 'interior', room: 'auto', floor: floorNum });
+        addedAny = true;
+        return;
+      }
+      const seg1Center = spanStart + seg1Len / 2;
+      const seg2Center = gapEnd + seg2Len / 2;
+      [[seg1Center, seg1Len], [seg2Center, seg2Len]].forEach(([center, len]) => {
+        const size = isVertical ? [thickness, wallH, len] : [len, wallH, thickness];
+        const position = isVertical ? [fixed, wallY, center] : [center, wallY, fixed];
+        spec.parts.push({ type: 'box', size, position, material: 'wood', color: '#d8cdb8', group: 'interior', room: 'auto', floor: floorNum });
+      });
+      addedAny = true;
+    };
+
     for (let c = 1; c < cols; c++) {
       const x = cx - w / 2 + colW * c;
-      spec.parts.push({ type: 'box', size: [thickness, wallH, d], position: [x, wallY, cz], material: 'wood', color: '#d8cdb8', group: 'interior', room: 'auto', floor: floorNum });
-      addedAny = true;
+      pushGappedPartition(true, x, cz - d / 2, d, c % 2 === 0 ? 0.25 : 0.75);
     }
     for (let r = 1; r < rows; r++) {
       const z = cz - d / 2 + rowD * r;
-      spec.parts.push({ type: 'box', size: [w, wallH, thickness], position: [cx, wallY, z], material: 'wood', color: '#d8cdb8', group: 'interior', room: 'auto', floor: floorNum });
-      addedAny = true;
+      pushGappedPartition(false, z, cx - w / 2, w, r % 2 === 0 ? 0.7 : 0.3);
     }
 
     if (furnish) {
@@ -141,12 +188,12 @@ function reinforceDesign(result, { furnish }) {
   return result;
 }
 
-async function callGemini(parts, { json = true } = {}) {
+async function callGemini(parts, { json = true, model = TEXT_MODEL, temperature = 0.5 } = {}) {
   if (!genAI) throw new Error('No Gemini API key configured');
   const response = await genAI.models.generateContent({
-    model: TEXT_MODEL,
+    model,
     contents: [{ role: 'user', parts }],
-    config: json ? { temperature: 0.5, responseMimeType: 'application/json' } : { temperature: 0.3 },
+    config: json ? { temperature, responseMimeType: 'application/json' } : { temperature },
   });
   return response.text || '';
 }
@@ -300,7 +347,7 @@ const TEMPLATES = {
     ],
     modelSpec: { parts: [
       { type: 'box', size: [2.4, 1.6, 1.8], position: [0, 0.8, 0], material: 'wood', group: 'structure' },
-      { type: 'cylinder', radiusTop: 0.001, radiusBottom: 1.3, height: 0.9, position: [0, 2.05, 0], material: 'metal', group: 'roof' },
+      { group: 'roof', roofStyle: 'hip', pitch: 0.5, overhang: 0.35, material: 'metal', color: '#5a4a3a', floor: 1 },
       { type: 'box', size: [0.55, 0.55, 0.03], position: [-0.7, 0.95, 0.92], material: 'glass', group: 'window' },
       { type: 'box', size: [0.55, 0.55, 0.03], position: [0.7, 0.95, 0.92], material: 'glass', group: 'window' },
       { type: 'box', size: [0.6, 1.3, 0.03], position: [-0.05, 0.65, 0.92], material: 'wood', group: 'door' },
@@ -352,7 +399,7 @@ const TEMPLATES = {
     ],
     modelSpec: { parts: [
       { type: 'box', size: [10, 3.2, 8], position: [0, 1.6, 0], material: 'wood', group: 'structure' },
-      { type: 'cylinder', radiusTop: 0.001, radiusBottom: 7.2, height: 1.8, position: [0, 4.1, 0], material: 'metal', color: '#5a4a3a', group: 'roof' },
+      { group: 'roof', roofStyle: 'hip', pitch: 0.4, overhang: 0.45, material: 'metal', color: '#5a4a3a', floor: 1 },
       { type: 'box', size: [1.2, 1.2, 0.05], position: [-2.5, 1.8, 4.02], material: 'glass', group: 'window' },
       { type: 'box', size: [1.2, 1.2, 0.05], position: [2.5, 1.8, 4.02], material: 'glass', group: 'window' },
       { type: 'box', size: [0.05, 1.2, 1.2], position: [-5.02, 1.8, -1], material: 'glass', group: 'window' },
@@ -405,11 +452,25 @@ function offlineChatReply(message) {
 async function analyzeBlueprint({ base64, mimeType, fileName, notes }) {
   if (genAI) {
     try {
+      const groundingInstructions = `Before writing "modelSpec", first fill in a "sourceReading" object (this must appear FIRST in your JSON, before any other field) so you reason from what's actually on the page rather than guessing:
+{
+  "sourceReading": {
+    "scale": "the drawing's stated scale/scale-bar, or 'not indicated — estimated from typical room sizes' if absent",
+    "overallDimensions": "the building's overall footprint width x depth, converted to meters",
+    "roomsDetected": [ {"name": "room label as written on the plan", "approxSize": "w x d in meters"}, ... one entry per labeled room ],
+    "wallsAndOpenings": "brief note on wall lines, door swings, and window markers you can see and their approximate positions"
+  }
+}
+Every numeric value you then put in "modelSpec" (envelope size, partition positions, window/door placement) must be consistent with the measurements you just wrote in "sourceReading" — do not silently change proportions or invent a different scale between the two. If a dimension truly isn't legible, say so in sourceReading and use a reasonable typical value rather than a random guess, and note the assumption in "summary".`;
       const parts = [
-        { text: `You are a professional architect's assistant. The uploaded image is likely a floor plan, blueprint, elevation drawing, or a photo of a building/structure. Read any labeled dimensions, room names, wall lines, door/window markers, and scale indicators as precisely as possible, and reconstruct them as an accurate to-scale 3D design — prioritize matching the real proportions and layout shown over creative interpretation. Do not invent furniture or decor that isn't indicated in the source. ${notes ? `Architect's notes: ${notes}.` : ''}\n${schemaInstructions({ furnish: false })}` },
+        { text: `You are a professional architect's assistant. The uploaded image is likely a floor plan, blueprint, elevation drawing, or a photo of a building/structure. Read any labeled dimensions, room names, wall lines, door/window markers, and scale indicators as precisely as possible, and reconstruct them as an accurate to-scale 3D design — prioritize matching the real proportions and layout shown over creative interpretation. Do not invent furniture or decor that isn't indicated in the source. ${notes ? `Architect's notes: ${notes}.` : ''}\n\n${groundingInstructions}\n\n${schemaInstructions({ furnish: false })}` },
         { inlineData: { mimeType, data: base64 } },
       ];
-      const text = await callGemini(parts);
+      // Blueprint reading needs faithful, low-variance extraction rather
+      // than creative variety, so it uses the stronger vision model at a
+      // low temperature (see VISION_MODEL note above) instead of the
+      // lite/default-temperature settings used for open-ended chat design.
+      const text = await callGemini(parts, { model: VISION_MODEL, temperature: 0.15 });
       const json = reinforceDesign(JSON.parse(stripFences(text)), { furnish: false });
       return { ...json, engine: 'gemini' };
     } catch (err) {

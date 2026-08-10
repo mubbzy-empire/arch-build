@@ -50,6 +50,8 @@ export default function ManualModeler() {
   const [editor, setEditor] = useState({ parts: [], history: [], future: [] });
   const [tool, setTool] = useState('select');
   const [selectedId, setSelectedId] = useState(null);
+  const [gizmoMode, setGizmoMode] = useState('translate');
+  const gizmoModeRef = useRef(gizmoMode);
   const [wallDraftActive, setWallDraftActive] = useState(false);
   const [title, setTitle] = useState('My design');
   const [saving, setSaving] = useState(false);
@@ -64,6 +66,7 @@ export default function ManualModeler() {
   useEffect(() => { partsRef.current = editor.parts; }, [editor.parts]);
   useEffect(() => { toolRef.current = tool; }, [tool]);
   useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
+  useEffect(() => { gizmoModeRef.current = gizmoMode; if (transformRef.current) transformRef.current.setMode(gizmoMode); }, [gizmoMode]);
   useEffect(() => { if (tool !== 'wall') { wallDraftRef.current = null; setWallDraftActive(false); } }, [tool]);
 
   const selectedPart = useMemo(() => editor.parts.find(p => p.id === selectedId) || null, [editor.parts, selectedId]);
@@ -198,16 +201,32 @@ export default function ManualModeler() {
       transformControls.addEventListener('dragging-changed', (e) => {
         controls.enabled = !e.value;
         if (e.value) {
-          dragStartRef.current = transformControls.object ? transformControls.object.position.clone() : null;
+          dragStartRef.current = transformControls.object
+            ? { position: transformControls.object.position.clone(), rotationY: transformControls.object.rotation.y }
+            : null;
         } else if (dragStartRef.current && transformControls.object) {
           const obj = transformControls.object;
-          const delta = obj.position.clone().sub(dragStartRef.current);
+          const start = dragStartRef.current;
+          const delta = obj.position.clone().sub(start.position);
+          const rotDelta = obj.rotation.y - start.rotationY;
           const partId = obj.userData.partId;
+          const cosR = Math.cos(rotDelta), sinR = Math.sin(rotDelta);
           commit(prev => prev.map(p => {
-            if (p.id === partId) return { ...p, position: [obj.position.x, obj.position.y, obj.position.z] };
-            if (p.wallId === partId && (delta.x !== 0 || delta.y !== 0 || delta.z !== 0)) {
+            if (p.id === partId) {
+              return { ...p, position: [obj.position.x, obj.position.y, obj.position.z], rotation: obj.rotation.y };
+            }
+            // Openings attached to a wall (wallId) must move/rotate together with it
+            // so a door/window stays correctly seated in the wall it was cut into.
+            if (p.wallId === partId) {
               const [px, py, pz] = p.position;
-              return { ...p, position: [px + delta.x, py + delta.y, pz + delta.z] };
+              if (rotDelta !== 0) {
+                const dx = px - start.position.x, dz = pz - start.position.z;
+                const rx = dx * cosR - dz * sinR, rz = dx * sinR + dz * cosR;
+                return { ...p, position: [obj.position.x + rx, py, obj.position.z + rz] };
+              }
+              if (delta.x !== 0 || delta.y !== 0 || delta.z !== 0) {
+                return { ...p, position: [px + delta.x, py + delta.y, pz + delta.z] };
+              }
             }
             return p;
           }));
@@ -252,6 +271,7 @@ export default function ManualModeler() {
           if (hit) {
             const partId = hit.object.userData.partId;
             setSelectedId(partId);
+            transformControls.setMode(gizmoModeRef.current);
             transformControls.attach(hit.object);
             transformControls.enabled = true;
             transformControls.visible = true;
@@ -402,10 +422,11 @@ export default function ManualModeler() {
     if (tool !== 'select') {
       tc.detach(); tc.enabled = false; tc.visible = false;
     } else if (selectedId && meshMapRef.current[selectedId]) {
+      tc.setMode(gizmoMode);
       tc.attach(meshMapRef.current[selectedId][0]);
       tc.enabled = true; tc.visible = true;
     }
-  }, [tool, selectedId]);
+  }, [tool, selectedId, gizmoMode]);
 
   const saveDesign = async () => {
     setSaving(true);
@@ -427,7 +448,7 @@ export default function ManualModeler() {
   };
 
   const hintText = () => {
-    if (tool === 'select') return selectedPart ? 'Drag the arrow to move — use the panel to edit size/material' : 'Tap a part to select it';
+    if (tool === 'select') return selectedPart ? (gizmoMode === 'rotate' ? 'Drag the ring to rotate' : 'Drag the arrow to move — use Rotate to turn it') : 'Tap a part to select it';
     if (tool === 'wall') return wallDraftActive ? "Tap the wall's end point" : "Tap the wall's start point";
     if (tool === 'door' || tool === 'window') return `Tap an existing wall to place a ${tool}`;
     return 'Tap the ground to place it';
@@ -453,6 +474,13 @@ export default function ManualModeler() {
         <button className="btn btn-ghost" onClick={undo} disabled={!editor.history.length}>Undo</button>
         <button className="btn btn-ghost" onClick={redo} disabled={!editor.future.length}>Redo</button>
       </div>
+
+      {tool === 'select' && selectedPart && (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className={gizmoMode === 'translate' ? 'btn btn-primary' : 'btn btn-secondary'} onClick={() => setGizmoMode('translate')}>Move</button>
+          <button className={gizmoMode === 'rotate' ? 'btn btn-primary' : 'btn btn-secondary'} onClick={() => setGizmoMode('rotate')}>Rotate</button>
+        </div>
+      )}
 
       {buildError ? (
         <div className="viewer-shell" style={{ minHeight: 220, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
