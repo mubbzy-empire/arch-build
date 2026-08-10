@@ -16,7 +16,7 @@ export default function TopBar() {
     <header className="topbar">
       <div className="mark">
         <span className="dot" />
-        ArchVision
+        Arch-3d build
       </div>
       <div className="status">
         <span className={`led ${online === null ? '' : online ? 'online' : 'offline'}`} />

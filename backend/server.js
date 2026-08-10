@@ -7,6 +7,7 @@ const fs = require('fs');
 const analyzeRoute = require('./routes/analyze');
 const chatRoute = require('./routes/chat');
 const estimateRoute = require('./routes/estimate');
+const estateRoute = require('./routes/estate');
 const { isOnline } = require('./services/aiService');
 
 const app = express();
@@ -23,6 +24,7 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/analyze', analyzeRoute);
 app.use('/api/chat', chatRoute);
 app.use('/api/estimate', estimateRoute);
+app.use('/api/estate', estateRoute);
 
 // Serve the built frontend (if present) so the whole app is a single
 // deployable service — no separate frontend host needed.
@@ -41,6 +43,6 @@ app.use((err, _req, res, _next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`ArchVision API running on http://localhost:${PORT}`);
+  console.log(`Arch-3d build API running on http://localhost:${PORT}`);
   console.log(`AI engine: ${isOnline() ? 'Gemini (online)' : 'Offline built-in engine (no API key set)'}`);
 });

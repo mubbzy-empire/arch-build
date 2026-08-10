@@ -1,5 +1,5 @@
 /**
- * AI service for ArchVision.
+ * AI service for Arch-3d build.
  *
  * If GEMINI_API_KEY is set (free tier key from https://aistudio.google.com/apikey),
  * requests go to Google's Gemini API for real vision + language analysis,
@@ -45,16 +45,100 @@ Respond with ONLY valid JSON (no markdown fences, no commentary) matching exactl
   }
 }
 Every part needs a "group" tag:
-- "structure": the building envelope. If the building is a SINGLE story, exactly ONE box for the whole envelope. If it has MULTIPLE stories/floors (e.g. described as two-story, a penthouse atop other floors, an apartment building), create ONE separate structure box PER FLOOR, each stacked at the correct height and each tagged with its own "floor" number (1 = ground floor, 2 = next floor up, etc.) — the viewer turns each floor's envelope into its own real hollow walls with door/window cutouts, and makes each floor independently selectable and draggable so a person can pull one floor away to inspect the others. Never add separate wall boxes alongside a structure envelope — the viewer builds the walls automatically from it.
+- "structure": the building envelope. Its own "material" must be "wood", "metal", or "fabric" — NEVER "glass", even for designs described as glassy/floor-to-ceiling windows (represent that with more/larger "window" parts instead; a glass envelope makes the whole building see-through, which is wrong). If the building is a SINGLE story, exactly ONE box for the whole envelope. If it has MULTIPLE stories/floors (e.g. described as two-story, a penthouse atop other floors, an apartment building), create ONE separate structure box PER FLOOR, each stacked at the correct height and each tagged with its own "floor" number (1 = ground floor, 2 = next floor up, etc.) — the viewer turns each floor's envelope into its own real hollow walls with door/window cutouts, and makes each floor independently selectable and draggable so a person can pull one floor away to inspect the others. Every floor needs its own full room layout (not just the ground floor). Never add separate wall boxes alongside a structure envelope — the viewer builds the walls automatically from it.
 - "roof": roof/lid/top-cover geometry on the topmost floor, its own separate part(s) so it can be toggled off.
 - "window": becomes a REAL cut-through opening with glass filling it. Width ~0.9-1.5m, height ~1-1.4m. At least 3-5 per floor across different walls for a house. Tag with the matching "floor" number of the wall it belongs to.
 - "door": becomes a REAL cut-through opening with a door panel filling it. ~0.8-1.0m wide, ~2.0-2.1m tall, base at y=0 relative to its floor. At least one exterior door on the ground floor. Tag with the matching "floor" number.
-- "interior": a floor slab per story, plus REAL ROOM PLANNING via partition walls — this is required, not optional. Based on the building's description and category, lay out distinct, fully-enclosed rooms appropriate to it (for a home: a living room/parlor, a dining area, a kitchen, at least one bathroom, and one bedroom per bedroom described) using partition walls that connect on at least two sides so each room reads as a real separate space, not just a single divider line down the middle. Tag each interior part with the "room" it belongs to (e.g. "Parlor", "Dining Room", "Bathroom", "Bedroom 1") and the correct "floor" number.
-- "furniture": ${furnish ? 'REQUIRED — furnish every room appropriately for what it is: sofa/coffee table/TV console for a living room or parlor, table and chairs for a dining room, counters/island for a kitchen, toilet/sink/tub blocks for a bathroom, bed/wardrobe/nightstand for a bedroom. Give each piece a fitting "color" so the space reads as warm and professionally decorated, and tag each with the matching "room" and "floor". Add at least 3-5 furniture parts per room.' : 'do not use this group — do not invent furniture that was not shown in the source material; only include structural/fixed elements actually present.'}
+- "interior": a floor slab per story, PLUS mandatory partition walls that physically divide the floor into distinct enclosed rooms — this is the single most important part of a good response, do not skip or minimize it. First mentally list the rooms this floor needs (a home needs, at minimum: one living/parlor room, one kitchen, one bathroom/toilet, and one bedroom per bedroom described — plus a dining area, garage, or terrace if mentioned), then output real partition wall boxes that physically separate every one of those rooms from its neighbors (walls on at least 2-3 sides per room, not a single line down the middle). A floor with fewer than (room count − 1) × 2 partition wall parts is not acceptable. Tag each with the "room" it belongs to (e.g. "Parlor", "Kitchen", "Toilet", "Bedroom 1", "Garage") and the correct "floor".
+- "furniture": ${furnish ? 'REQUIRED — furnish every room appropriately for what it is: sofa/coffee table/TV console for a living room or parlor, table and chairs for a dining room, counters/island for a kitchen, toilet/sink/tub blocks for a bathroom, bed/wardrobe/nightstand for a bedroom, workbench or storage for a garage. Give each piece a fitting "color" so the space reads as warm and professionally decorated, and tag each with the matching "room" and "floor". Add at least 3-5 furniture parts per room — a room with zero furniture is not acceptable.' : 'do not use this group — do not invent furniture that was not shown in the source material; only include structural/fixed elements actually present.'}
 The optional "color" field is a specific hex color (e.g. "#3a5f7d") you choose because it suits the design — used instead of the generic material default. Vary it thoughtfully across parts for a designed, non-monotone look. Never use gradients — one flat, considered color per part.
-Never represent the object as a single primitive. Break every object into the distinct parts a builder would actually assemble. Buildings must include one "structure" envelope per floor, a "roof" group, several "window" openings, at least one "door" opening, and genuinely room-planned "interior" + "furniture" parts as described above — never a single flat-topped box, and never a single undivided open interior for anything larger than a one-room structure.
-Keep "parts" between 3 and 50 primitives (furnished multi-room, multi-story buildings need the higher end) using meters, centered around x=0, resting on y=0 upward, with floor 1 starting at y=0 and each additional floor stacked directly on top of the one below.
+Never represent the object as a single primitive. Break every object into the distinct parts a builder would actually assemble. Buildings must include one "structure" envelope per floor, a "roof" group, several "window" openings, at least one "door" opening, and genuinely room-planned "interior" + "furniture" parts as described above — never a single flat-topped box, and never a single undivided open interior for anything larger than a one-room structure. A response that just adds one or two stray divider walls without enclosing real, separate, named rooms is a failing response — plan the full room layout before writing the parts list.
+Keep "parts" between 3 and 60 primitives (furnished multi-room, multi-story buildings need the higher end — a real house/penthouse routinely needs 30-50+ parts once every room is properly walled and furnished) using meters, centered around x=0, resting on y=0 upward, with floor 1 starting at y=0 and each additional floor stacked directly on top of the one below.
 `.trim();
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic safety net: if the model still returns a sparse, barely
+// partitioned interior despite the instructions above (smaller/faster free
+// models sometimes under-deliver on complex structured output), fill in a
+// simple room grid and, for furnished designs, basic furniture — so the
+// viewer always shows real room demarcation rather than one open box. Only
+// runs for live Gemini output (never touches the hand-authored offline
+// templates), and only adds to floors the AI left essentially unplanned.
+// ---------------------------------------------------------------------------
+function reinforceDesign(result, { furnish }) {
+  const spec = result?.modelSpec;
+  if (!spec || !Array.isArray(spec.parts) || !spec.parts.length) return result;
+
+  // Belt-and-suspenders: never let the envelope itself be glass, even if
+  // the prompt instruction above gets ignored.
+  spec.parts.forEach(p => {
+    if (p.group === 'structure' && p.material === 'glass') p.material = 'wood';
+  });
+
+  const isBuildingLike = spec.parts.some(p => p.group === 'door' || p.group === 'window');
+  if (!isBuildingLike) return result;
+
+  const floors = [...new Set(spec.parts.filter(p => p.group === 'structure').map(p => p.floor ?? 1))];
+  const palette = ['#8a6d5c', '#5c7a6d', '#7a5230', '#6d5c8a', '#a08a5c', '#5c8a76'];
+  let paletteIdx = 0;
+  let addedAny = false;
+
+  floors.forEach(floorNum => {
+    const envelope = spec.parts.find(p => p.group === 'structure' && (p.floor ?? 1) === floorNum);
+    if (!envelope || !envelope.size) return;
+
+    const existingRooms = new Set(
+      spec.parts.filter(p => (p.floor ?? 1) === floorNum && p.group === 'interior' && p.room).map(p => p.room)
+    );
+    if (existingRooms.size >= 3) return; // AI already planned real rooms for this floor — leave it alone
+
+    const [w, h, d] = envelope.size;
+    const [cx, cy, cz] = envelope.position || [0, h / 2, 0];
+    const baseY = cy - h / 2;
+    const thickness = 0.08;
+    const wallH = h * 0.85;
+    const wallY = baseY + wallH / 2;
+
+    const area = w * d;
+    const cols = area > 70 ? 3 : 2;
+    const rows = area > 45 ? 2 : 1;
+    const colW = w / cols;
+    const rowD = d / rows;
+
+    for (let c = 1; c < cols; c++) {
+      const x = cx - w / 2 + colW * c;
+      spec.parts.push({ type: 'box', size: [thickness, wallH, d], position: [x, wallY, cz], material: 'wood', color: '#d8cdb8', group: 'interior', room: 'auto', floor: floorNum });
+      addedAny = true;
+    }
+    for (let r = 1; r < rows; r++) {
+      const z = cz - d / 2 + rowD * r;
+      spec.parts.push({ type: 'box', size: [w, wallH, thickness], position: [cx, wallY, z], material: 'wood', color: '#d8cdb8', group: 'interior', room: 'auto', floor: floorNum });
+      addedAny = true;
+    }
+
+    if (furnish) {
+      let idx = 0;
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          idx++;
+          const roomCx = cx - w / 2 + colW * (c + 0.5);
+          const roomCz = cz - d / 2 + rowD * (r + 0.5);
+          const fw = Math.min(colW, rowD) * 0.3;
+          spec.parts.push({
+            type: 'box', size: [fw, 0.45, fw * 1.4], position: [roomCx, baseY + 0.23, roomCz],
+            material: 'fabric', color: palette[paletteIdx++ % palette.length],
+            group: 'furniture', room: `Room ${idx}`, floor: floorNum,
+          });
+        }
+      }
+    }
+  });
+
+  if (addedAny) {
+    result.summary = `${result.summary || ''} (Room layout supplemented by Arch-3d build's fallback partitioning where the AI response was under-detailed.)`.trim();
+  }
+  return result;
 }
 
 async function callGemini(parts, { json = true } = {}) {
@@ -326,7 +410,7 @@ async function analyzeBlueprint({ base64, mimeType, fileName, notes }) {
         { inlineData: { mimeType, data: base64 } },
       ];
       const text = await callGemini(parts);
-      const json = JSON.parse(stripFences(text));
+      const json = reinforceDesign(JSON.parse(stripFences(text)), { furnish: false });
       return { ...json, engine: 'gemini' };
     } catch (err) {
       console.error('Gemini blueprint analysis failed, falling back to offline engine:', err.message);
@@ -341,10 +425,10 @@ async function chatDesign({ message, history }) {
     try {
       const convo = (history || []).map(h => `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.content}`).join('\n');
       const parts = [
-        { text: `You are a professional architectural design assistant embedded in an app called ArchVision. A user is describing a building or space they want designed. Conversation so far:\n${convo}\nUser: ${message}\n\n${schemaInstructions({ furnish: true })}` },
+        { text: `You are a professional architectural design assistant embedded in an app called Arch-3d build. A user is describing a building or space they want designed. Conversation so far:\n${convo}\nUser: ${message}\n\n${schemaInstructions({ furnish: true })}` },
       ];
       const text = await callGemini(parts);
-      const json = JSON.parse(stripFences(text));
+      const json = reinforceDesign(JSON.parse(stripFences(text)), { furnish: true });
       return {
         reply: json.title ? `Here's a furnished concept for "${json.title}".` : 'Here is a concept based on your description.',
         result: { ...json, engine: 'gemini' },
@@ -453,10 +537,156 @@ All numbers are plain numbers in the chosen local currency, no symbols or commas
   };
 }
 
+// ---------------------------------------------------------------------------
+// ESTATE / COMPOUND GENERATION
+//
+// An estate is generated as N independent buildings (each reusing the same
+// proven single-building JSON contract above, so each house gets the same
+// real walls/openings/rooms quality as a standalone design) plus a SEPARATE,
+// purely procedural site-layout step that places them on the site.
+//
+// The layout is deliberately NOT left to the AI: grid math guarantees
+// non-overlapping footprints and consistent road spacing every time, which
+// is the "geometric correctness before visual decoration" principle this
+// app is built around — an AI-guessed layout could plausibly overlap houses
+// or ignore the site boundary, a procedural one cannot.
+// ---------------------------------------------------------------------------
+
+async function generateEstateBuilding({ description, index, total }) {
+  if (genAI) {
+    try {
+      const variation = `This is building ${index} of ${total} in a residential estate/compound. Estate brief: "${description}". Give this specific building its own distinct footprint, room count, and roofline appropriate to the brief — vary its size/bedroom count/style slightly from a "typical" building matching the brief so the estate doesn't look like ${total} identical clones, while staying consistent with the overall estate description and any per-house instructions in it (e.g. "houses 2-5 should be 3-bedroom duplexes").`;
+      const parts = [{ text: `You are a professional architectural design assistant generating ONE building within a larger estate project.\n${variation}\n\n${schemaInstructions({ furnish: true })}` }];
+      const text = await callGemini(parts);
+      const json = reinforceDesign(JSON.parse(stripFences(text)), { furnish: true });
+      return { ...json, engine: 'gemini' };
+    } catch (err) {
+      console.error(`Estate building ${index}/${total} generation failed, using offline template:`, err.message);
+    }
+  }
+  // Offline fallback: cycle a house template with a per-index scale variation
+  // so buildings in the estate are still visually distinguishable from
+  // each other, clearly labeled as offline/procedural (never claimed as AI).
+  const offline = offlineDesign(description, '');
+  const scale = 0.82 + ((index - 1) % 5) * 0.09;
+  const scaled = JSON.parse(JSON.stringify(offline));
+  scaled.title = `${offline.title} (variant ${index})`;
+  scaled.modelSpec.parts = (scaled.modelSpec.parts || []).map(p => ({
+    ...p,
+    size: p.size ? p.size.map(v => v * scale) : p.size,
+    radiusTop: p.radiusTop != null ? p.radiusTop * scale : p.radiusTop,
+    radiusBottom: p.radiusBottom != null ? p.radiusBottom * scale : p.radiusBottom,
+    height: p.type === 'cylinder' && p.height != null ? p.height * scale : p.height,
+    position: p.position ? p.position.map(v => v * scale) : p.position,
+  }));
+  return { ...scaled, engine: 'offline' };
+}
+
+// Small bounded-concurrency helper — keeps several Gemini calls in flight
+// at once (faster than fully sequential) without firing all N at once
+// (which risks free-tier rate limits on larger estates).
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const i = cursor++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+// Reads each building's own generated geometry to get its real footprint
+// (bounding box in the X/Z plane), rather than assuming a fixed lot size —
+// so the procedural layout below fits the buildings that actually exist.
+function computeFootprint(modelSpec) {
+  const parts = modelSpec?.parts || [];
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  parts.forEach(p => {
+    const [x = 0, , z = 0] = p.position || [0, 0, 0];
+    let halfW = 0.5, halfD = 0.5;
+    if (p.type === 'cylinder') {
+      const r = Math.max(p.radiusTop ?? 0, p.radiusBottom ?? 0, 0.3);
+      halfW = r; halfD = r;
+    } else if (p.size) {
+      halfW = (p.size[0] || 1) / 2;
+      halfD = (p.size[2] || 1) / 2;
+    }
+    minX = Math.min(minX, x - halfW); maxX = Math.max(maxX, x + halfW);
+    minZ = Math.min(minZ, z - halfD); maxZ = Math.max(maxZ, z + halfD);
+  });
+  if (!isFinite(minX)) return { width: 10, depth: 8 };
+  return { width: Math.max(maxX - minX, 3), depth: Math.max(maxZ - minZ, 3) };
+}
+
+// Deterministic grid placement with a fixed road-width gap between every
+// building on both axes. Guarantees zero footprint overlap by construction.
+function layoutEstate(buildings, siteWidth, siteDepth) {
+  const ROAD_GAP = 6;
+  const SETBACK = 3;
+  const footprints = buildings.map(b => computeFootprint(b.modelSpec));
+  const cellW = Math.max(...footprints.map(f => f.width), 6) + ROAD_GAP;
+  const cellD = Math.max(...footprints.map(f => f.depth), 6) + ROAD_GAP;
+  const usableWidth = Math.max((siteWidth || 0) - SETBACK * 2, cellW);
+  const cols = Math.max(1, Math.min(buildings.length, Math.floor(usableWidth / cellW) || 1));
+  const rows = Math.ceil(buildings.length / cols);
+
+  const positions = buildings.map((_, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    return {
+      x: -((cols - 1) * cellW) / 2 + col * cellW,
+      z: -((rows - 1) * cellD) / 2 + row * cellD,
+    };
+  });
+
+  return {
+    positions,
+    site: {
+      width: Math.max(siteWidth || 0, cols * cellW + SETBACK * 2),
+      depth: Math.max(siteDepth || 0, rows * cellD + SETBACK * 2),
+      cols, rows, roadGap: ROAD_GAP,
+    },
+  };
+}
+
+async function generateEstate({ description, buildingCount, siteWidth, siteDepth }) {
+  const count = Math.max(1, Math.min(10, Number(buildingCount) || 4));
+  const indices = Array.from({ length: count }, (_, i) => i + 1);
+  const buildingResults = await mapWithConcurrency(indices, 3, (i) =>
+    generateEstateBuilding({ description, index: i, total: count })
+  );
+
+  const { positions, site } = layoutEstate(buildingResults, Number(siteWidth) || 60, Number(siteDepth) || 60);
+  const engine = buildingResults.some(b => b.engine === 'gemini') ? 'gemini' : 'offline';
+
+  const buildings = buildingResults.map((b, i) => ({
+    name: b.title || `House ${String(i + 1).padStart(2, '0')}`,
+    position: [positions[i].x, positions[i].z],
+    rotation: 0,
+    category: b.category || 'house',
+    summary: b.summary || '',
+    dimensions: b.dimensions || [],
+    materials: b.materials || [],
+    modelSpec: b.modelSpec || { parts: [] },
+  }));
+
+  return {
+    title: description ? `Estate — ${description.slice(0, 60)}` : 'New Residential Estate',
+    summary: `A ${count}-building estate generated from: "${description || 'no brief given'}".`,
+    site,
+    buildings,
+    engine,
+  };
+}
+
 module.exports = {
   analyzeBlueprint,
   chatDesign,
   generateRenderImage,
   generateCostEstimate,
+  generateEstate,
   isOnline: () => Boolean(GEMINI_KEY),
 };

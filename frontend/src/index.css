@@ -382,6 +382,21 @@ textarea::placeholder, input::placeholder { color: var(--text-faint); }
 .viewer-controls button.active { color: var(--accent-text); border-color: var(--accent-dim); }
 
 .color-row { display: flex; flex-wrap: wrap; gap: 14px; padding: 12px 14px; border-top: 1px solid var(--border-soft); background: rgba(10, 12, 15, 0.4); }
+
+.part-info-panel { position: absolute; left: 10px; bottom: 10px; max-width: 220px; background: rgba(10, 12, 15, 0.88); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; backdrop-filter: blur(4px); }
+.part-info-close { position: absolute; top: 4px; right: 6px; background: none; border: none; color: var(--text-faint); font-size: 15px; line-height: 1; cursor: pointer; padding: 4px; }
+.part-info-rows { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); }
+
+.scene-explorer { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+.scene-explorer-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border-soft); background: rgba(255,255,255,0.02); cursor: pointer; font-size: 13px; }
+.scene-explorer-item.active { border-color: var(--accent-dim); background: rgba(255,255,255,0.05); }
+.scene-explorer-item .name { font-weight: 500; }
+.scene-explorer-item .toggle-visible { background: none; border: none; color: var(--text-faint); font-size: 12px; padding: 2px 6px; }
+.scene-explorer-item .toggle-visible.hidden { color: var(--danger); }
+
+.version-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border-soft); font-size: 12.5px; }
+.version-row .meta { display: flex; flex-direction: column; }
+.version-row .meta span { color: var(--text-faint); font-size: 11px; }
 .color-swatch { display: flex; flex-direction: column; align-items: center; gap: 5px; cursor: pointer; }
 .color-swatch input[type="color"] { width: 26px; height: 26px; padding: 0; border: 1.5px solid var(--border); border-radius: 50%; background: none; cursor: pointer; -webkit-appearance: none; appearance: none; }
 .color-swatch input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; border-radius: 50%; }

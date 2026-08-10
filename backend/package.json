@@ -1,7 +1,7 @@
 {
   "name": "archvision-backend",
   "version": "1.0.0",
-  "description": "ArchVision API - blueprint/photo-to-3D analysis, AI chat design, cost estimation",
+  "description": "Arch-3d build API - blueprint/photo-to-3D analysis, AI chat design, cost estimation",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {

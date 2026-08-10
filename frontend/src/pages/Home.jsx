@@ -14,7 +14,7 @@ export default function Home() {
         </h1>
         <p className="page-sub" style={{ marginTop: 10 }}>
           Upload a floor plan or elevation drawing, or describe a space in chat.
-          ArchVision returns a to-scale, editable 3D model — click any wall, roof
+          Arch-3d build returns a to-scale, editable 3D model — click any wall, roof
           panel, door, or piece of furniture and drag it to explore the interior —
           plus dimensions, materials, equipment, and a budget estimate.
         </p>

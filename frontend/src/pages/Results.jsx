@@ -4,7 +4,7 @@ import ModelViewer from '../components/ModelViewer';
 import { DimensionsCard, EquipmentCard, MaterialsCard, StepsCard } from '../components/ResultDetails';
 import BudgetEstimator from '../components/BudgetEstimator';
 import Disclaimer from '../components/Disclaimer';
-import { getProject } from '../api/client';
+import { getProject, listProjectVersions, saveProjectVersion, restoreProjectVersion } from '../api/client';
 
 export default function Results() {
   const location = useLocation();
@@ -13,6 +13,9 @@ export default function Results() {
   const [result, setResult] = useState(location.state?.result || null);
   const [loading, setLoading] = useState(!location.state?.result && !!params.id);
   const [error, setError] = useState(null);
+  const [versions, setVersions] = useState([]);
+  const [versionLabel, setVersionLabel] = useState('');
+  const [savingVersion, setSavingVersion] = useState(false);
 
   useEffect(() => {
     if (!result && params.id) {
@@ -28,12 +31,45 @@ export default function Results() {
     }
   }, [params.id]);
 
+  useEffect(() => {
+    if (params.id) listProjectVersions(params.id).then(setVersions).catch(() => {});
+  }, [params.id]);
+
+  const saveVersion = async () => {
+    if (!params.id) return;
+    setSavingVersion(true);
+    try {
+      const v = await saveProjectVersion(params.id, versionLabel);
+      setVersions(list => [v, ...list]);
+      setVersionLabel('');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingVersion(false);
+    }
+  };
+
+  const restoreVersion = async (versionId) => {
+    if (!params.id) return;
+    try {
+      await restoreProjectVersion(params.id, versionId);
+      const p = await getProject(params.id);
+      setResult({
+        id: p.id, title: p.title, category: p.category, summary: p.summary,
+        dimensions: p.dimensions, materials: p.materials, equipment: p.equipment,
+        modelSpec: p.modelSpec, imagePath: p.image_path, renderImagePath: p.renderImagePath, engine: 'saved',
+      });
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   const exportDetails = () => {
     const payload = {
       title: result.title, category: result.category, summary: result.summary,
       dimensions: result.dimensions, materials: result.materials,
       equipment: result.equipment, steps: result.steps, modelSpec: result.modelSpec,
-      exportedFrom: 'ArchVision', exportedAt: new Date().toISOString(),
+      exportedFrom: 'Arch-3d build', exportedAt: new Date().toISOString(),
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -104,6 +140,36 @@ export default function Results() {
           <BudgetEstimator project={result} />
 
           <button className="btn btn-secondary btn-block" onClick={exportDetails}>Export project details (.json)</button>
+
+          {result.id && (
+            <div className="panel bracket">
+              <div className="section-head"><h3>Version history</h3><span className="count">{versions.length} saved</span></div>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                <input
+                  type="text"
+                  placeholder="Label this checkpoint (optional)"
+                  value={versionLabel}
+                  onChange={(e) => setVersionLabel(e.target.value)}
+                  style={{ flex: 1 }}
+                />
+                <button className="btn btn-secondary" onClick={saveVersion} disabled={savingVersion}>
+                  {savingVersion ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+              {versions.length === 0 && <p className="page-sub" style={{ fontSize: 12.5 }}>No checkpoints saved yet.</p>}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {versions.map(v => (
+                  <div key={v.id} className="version-row">
+                    <div className="meta">
+                      <b>{v.label}</b>
+                      <span>{new Date(v.created_at).toLocaleString()}</span>
+                    </div>
+                    <button className="btn btn-ghost" onClick={() => restoreVersion(v.id)}>Restore</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div style={{ display: 'flex', gap: 10 }}>
             <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => navigate('/chat', { state: { seed: result.title } })}>Refine in chat</button>

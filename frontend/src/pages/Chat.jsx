@@ -34,7 +34,8 @@ export default function Chat() {
     try {
       const { reply, result, projectId: pid } = await sendChatMessage(text, messages, projectId);
       if (pid) setProjectId(pid);
-      setMessages([...nextHistory, { role: 'assistant', content: reply, result }]);
+      const resultWithId = result && pid ? { ...result, id: pid } : result;
+      setMessages([...nextHistory, { role: 'assistant', content: reply, result: resultWithId }]);
     } catch (err) {
       setMessages([...nextHistory, { role: 'assistant', content: `Something went wrong: ${err.message}` }]);
     } finally {
@@ -56,7 +57,7 @@ export default function Chat() {
       <div className="chat-scroll" ref={scrollRef}>
         {messages.map((m, i) => (
           <div key={i} className={`bubble ${m.role}`}>
-            {m.role === 'assistant' && <div className="eyebrow">ArchVision</div>}
+            {m.role === 'assistant' && <div className="eyebrow">Arch-3d build</div>}
             <p>{m.content}</p>
             {m.result && (
               <button className="btn btn-secondary" style={{ marginTop: 10 }} onClick={() => navigate('/results', { state: { result: { ...m.result, engine: m.result.engine || 'gemini' } } })}>
@@ -67,7 +68,7 @@ export default function Chat() {
         ))}
         {sending && (
           <div className="bubble assistant">
-            <div className="eyebrow">ArchVision</div>
+            <div className="eyebrow">Arch-3d build</div>
             <p style={{ color: 'var(--text-muted)' }}>Furnishing and drafting a concept…</p>
           </div>
         )}

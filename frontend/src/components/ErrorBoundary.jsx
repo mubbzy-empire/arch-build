@@ -11,7 +11,7 @@ export default class ErrorBoundary extends React.Component {
   }
 
   componentDidCatch(error, info) {
-    console.error('ArchVision crashed:', error, info);
+    console.error('Arch-3d build crashed:', error, info);
     this.setState({ info });
   }
 
