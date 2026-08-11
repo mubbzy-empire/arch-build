@@ -97,4 +97,20 @@ router.get('/:id', (req, res) => {
   });
 });
 
+// Save edits made in the manual 3D modeler back onto one building within an
+// estate (the modeler only holds a flat parts list — it doesn't touch that
+// building's name/category/dimensions/materials, just its geometry).
+router.patch('/:id/buildings/:buildingId', (req, res) => {
+  const building = db.prepare(`SELECT * FROM project_buildings WHERE id = ? AND project_id = ?`).get(req.params.buildingId, req.params.id);
+  if (!building) return res.status(404).json({ error: 'Building not found in this estate' });
+
+  const parts = req.body?.parts;
+  if (!Array.isArray(parts)) return res.status(400).json({ error: 'parts array is required' });
+
+  db.prepare(`UPDATE project_buildings SET model_spec_json = ? WHERE id = ?`)
+    .run(JSON.stringify({ parts }), req.params.buildingId);
+
+  res.json({ id: req.params.buildingId, modelSpec: { parts } });
+});
+
 module.exports = router;

@@ -4,7 +4,7 @@ import SceneViewer from '../components/SceneViewer';
 import ModelViewer from '../components/ModelViewer';
 import { DimensionsCard, MaterialsCard } from '../components/ResultDetails';
 import Disclaimer from '../components/Disclaimer';
-import { getEstate, listProjectVersions, saveProjectVersion, restoreProjectVersion } from '../api/client';
+import { getEstate, listProjectVersions, saveProjectVersion, restoreProjectVersion, updateEstateBuilding } from '../api/client';
 
 export default function EstateResults() {
   const location = useLocation();
@@ -93,7 +93,16 @@ export default function EstateResults() {
             <span className="count">{focusedBuilding.category}</span>
           </div>
           {focusedBuilding.summary && <p className="page-sub" style={{ marginBottom: 12 }}>{focusedBuilding.summary}</p>}
-          <ModelViewer modelSpec={focusedBuilding.modelSpec} title={focusedBuilding.name} />
+          <ModelViewer
+            modelSpec={focusedBuilding.modelSpec}
+            title={focusedBuilding.name}
+            onSave={async (parts) => {
+              await updateEstateBuilding(estate.id, focusedBuilding.id, parts);
+              const updatedBuilding = { ...focusedBuilding, modelSpec: { parts } };
+              setFocusedBuilding(updatedBuilding);
+              setEstate(e => ({ ...e, buildings: e.buildings.map(b => b.id === updatedBuilding.id ? updatedBuilding : b) }));
+            }}
+          />
           <div className="split-layout" style={{ marginTop: 14 }}>
             <div className="split-main">
               <DimensionsCard dimensions={focusedBuilding.dimensions} />
