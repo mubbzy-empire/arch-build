@@ -461,10 +461,6 @@ export function buildBuildingMeshes(parts) {
       const floorOpenings = openingParts.filter(p => (p.floor ?? 1) === floorNum);
       const [envelope, ...extraStructure] = floorStructure;
       if (!envelope) return;
-      // The envelope + its door/window cutouts are fused into one CSG
-      // shell — there's no single independent "part" a moved shellMesh or
-      // opening fill maps cleanly back onto, so these are left untagged
-      // (not individually persistable — see ModelViewer's edit mode).
       const { shellMesh, fillMeshes } = buildHollowShell(envelope, floorOpenings);
       shellMesh.userData.floor = floorNum;
       fillMeshes.forEach(m => { m.userData.floor = floorNum; });
@@ -472,7 +468,6 @@ export function buildBuildingMeshes(parts) {
       extraStructure.forEach(p => {
         const m = buildMesh(p);
         m.userData.floor = floorNum;
-        m.userData.partId = parts.indexOf(p);
         meshes.push(m);
       });
     });
@@ -480,7 +475,6 @@ export function buildBuildingMeshes(parts) {
     structureParts.forEach(p => {
       const m = buildMesh(p);
       m.userData.floor = p.floor ?? 1;
-      m.userData.partId = parts.indexOf(p);
       meshes.push(m);
     });
   }
@@ -496,18 +490,12 @@ export function buildBuildingMeshes(parts) {
         const footprint = { width: w, depth: d, centerX: ex, centerZ: ez, topY: ey + h / 2 };
         const m = buildRoofMesh(p, footprint);
         m.userData.floor = floorNum;
-        // A shaped roof (roofStyle) is generated procedurally from the
-        // envelope footprint rather than drawn straight from p.position/
-        // size, so a moved roof mesh can't be written back onto p as a
-        // simple position/rotation — left untagged, same reasoning as the
-        // wall shell above.
         meshes.push(m);
         return;
       }
     }
     const m = buildMesh(p);
     m.userData.floor = p.floor ?? topFloor;
-    m.userData.partId = parts.indexOf(p);
     meshes.push(m);
   });
 
@@ -515,7 +503,6 @@ export function buildBuildingMeshes(parts) {
     const m = buildMesh(p);
     m.userData.floor = p.floor ?? 1;
     m.userData.room = p.room || null;
-    m.userData.partId = parts.indexOf(p);
     meshes.push(m);
   });
 

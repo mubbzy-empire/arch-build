@@ -7,23 +7,18 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { GROUP_LABELS, getShadowTexture, buildBuildingMeshes, buildManualMeshes } from '../three/buildParts';
 import PartInfoPanel from './PartInfoPanel';
 
-export default function ModelViewer({ modelSpec, title, onSave, saveHint }) {
+export default function ModelViewer({ modelSpec, title }) {
   const mountRef = useRef(null);
   const [wireframe, setWireframe] = useState(false);
   const [hideRoof, setHideRoof] = useState(false);
   const [editMode, setEditMode] = useState(false);
-  const [gizmoMode, setGizmoMode] = useState('translate');
   const [selectedLabel, setSelectedLabel] = useState(null);
   const [selectedInfo, setSelectedInfo] = useState(null);
   const [colorOverrides, setColorOverrides] = useState({});
   const [buildError, setBuildError] = useState(null);
   const [storyView, setStoryView] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState(null);
-  const [saved, setSaved] = useState(false);
   const meshesRef = useRef([]);
   const transformRef = useRef(null);
-  const gizmoModeRef = useRef(gizmoMode);
   const sceneRef = useRef(null);
   const groupRef = useRef(null);
   const editModeRef = useRef(false);
@@ -47,12 +42,9 @@ export default function ModelViewer({ modelSpec, title, onSave, saveHint }) {
     setSelectedInfo(null);
     setBuildError(null);
     setStoryView(false);
-    setSaveError(null);
-    setSaved(false);
   }, [modelSpec]);
 
   useEffect(() => { editModeRef.current = editMode; }, [editMode]);
-  useEffect(() => { gizmoModeRef.current = gizmoMode; if (transformRef.current) transformRef.current.setMode(gizmoMode); }, [gizmoMode]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -187,7 +179,6 @@ export default function ModelViewer({ modelSpec, title, onSave, saveHint }) {
         if (hits.length) {
           const target = hits[0].object;
           const label = GROUP_LABELS[target.userData.group] || target.userData.group;
-          const persistable = target.userData.partId != null;
           setSelectedLabel(label);
           setSelectedInfo({
             label,
@@ -197,20 +188,9 @@ export default function ModelViewer({ modelSpec, title, onSave, saveHint }) {
             material: target.userData.material || null,
           });
           if (editModeRef.current) {
-            if (persistable) {
-              transformControls.setMode(gizmoModeRef.current);
-              transformControls.attach(target);
-              transformControls.enabled = true;
-              transformControls.visible = true;
-            } else {
-              // Exterior walls and roof shapes are fused/procedural (see
-              // buildBuildingMeshes) and have no single independent part to
-              // write a moved position back onto, so they're selectable for
-              // info but not draggable in edit mode.
-              transformControls.detach();
-              transformControls.enabled = false;
-              transformControls.visible = false;
-            }
+            transformControls.attach(target);
+            transformControls.enabled = true;
+            transformControls.visible = true;
           }
         } else {
           transformControls.detach();
@@ -298,8 +278,6 @@ export default function ModelViewer({ modelSpec, title, onSave, saveHint }) {
     setSelectedLabel(null);
     setSelectedInfo(null);
     setStoryView(false);
-    setSaved(false);
-    setSaveError(null);
   };
 
   const toggleStoryView = () => {
@@ -312,26 +290,6 @@ export default function ModelViewer({ modelSpec, title, onSave, saveHint }) {
       m.position.y += next ? delta : -delta;
     });
     setStoryView(next);
-  };
-
-  const saveChanges = async () => {
-    if (!onSave) return;
-    setSaving(true);
-    setSaveError(null);
-    setSaved(false);
-    try {
-      const nextParts = (modelSpec?.parts || []).map((p, i) => {
-        const mesh = meshesRef.current.find(m => m.userData.partId === i);
-        if (!mesh) return p;
-        return { ...p, position: [mesh.position.x, mesh.position.y, mesh.position.z], rotation: mesh.rotation.y };
-      });
-      await onSave(nextParts);
-      setSaved(true);
-    } catch (err) {
-      setSaveError(err.message || 'Save failed');
-    } finally {
-      setSaving(false);
-    }
   };
 
   const exportGLB = () => {
@@ -375,23 +333,12 @@ export default function ModelViewer({ modelSpec, title, onSave, saveHint }) {
     <div className="viewer-shell">
       <span className="viewer-tag">3D preview · drag to orbit · tap a part for details</span>
       {editMode && (
-        <span className="viewer-hint">
-          {selectedLabel ? `Editing: ${selectedLabel} — ${gizmoMode === 'rotate' ? 'drag the ring to rotate' : 'drag an arrow to move'}` : 'Tap a part to select it'}
-        </span>
+        <span className="viewer-hint">{selectedLabel ? `Editing: ${selectedLabel} — drag an arrow` : 'Tap a part to select it'}</span>
       )}
       <div className="viewer-canvas" ref={mountRef} />
       <PartInfoPanel info={selectedInfo} onClose={() => setSelectedInfo(null)} />
       <div className="viewer-controls">
-        {editMode && (
-          <>
-            <button className={gizmoMode === 'translate' ? 'active' : ''} onClick={() => setGizmoMode('translate')}>Move</button>
-            <button className={gizmoMode === 'rotate' ? 'active' : ''} onClick={() => setGizmoMode('rotate')}>Rotate</button>
-            <button onClick={resetPositions}>Reset positions</button>
-            {onSave && (
-              <button onClick={saveChanges} disabled={saving}>{saving ? 'Saving…' : saved ? 'Saved ✓' : 'Save changes'}</button>
-            )}
-          </>
-        )}
+        {editMode && <button onClick={resetPositions}>Reset positions</button>}
         <button className={editMode ? 'active' : ''} onClick={() => setEditMode(v => !v)}>
           {editMode ? 'Done editing' : 'Edit parts'}
         </button>
@@ -409,11 +356,6 @@ export default function ModelViewer({ modelSpec, title, onSave, saveHint }) {
         <button className={wireframe ? 'active' : ''} onClick={() => setWireframe(true)}>Wireframe</button>
         <button onClick={exportGLB} title="Download as a .glb 3D file — opens in Blender and most 3D software">Export .glb</button>
       </div>
-      {editMode && onSave && (
-        <p className="page-sub" style={{ fontSize: 12, padding: '0 4px' }}>
-          {saveError ? saveError : (saveHint || 'Move or rotate furniture, partitions, and roof pieces, then Save changes. Exterior walls, doors, and windows are shown for reference here but aren\u2019t repositioned individually in this view.')}
-        </p>
-      )}
       {presentGroups.length > 0 && (
         <div className="color-row">
           {presentGroups.map(g => (

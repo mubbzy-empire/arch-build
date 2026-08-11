@@ -86,19 +86,6 @@ export async function getEstate(id) {
   return res.json();
 }
 
-export async function updateEstateBuilding(estateId, buildingId, parts) {
-  const res = await fetch(`${BASE}/estate/${estateId}/buildings/${buildingId}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ parts }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Could not save building edits');
-  }
-  return res.json();
-}
-
 // --- Version history ---------------------------------------------------
 
 export async function listProjectVersions(projectId) {
