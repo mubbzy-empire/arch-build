@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { GROUP_LABELS, getShadowTexture, buildBuildingMeshes } from '../three/buildParts';
@@ -11,21 +12,43 @@ import PartInfoPanel from './PartInfoPanel';
 // geometry (same buildBuildingMeshes() used by the single-building editor)
 // placed and rotated at its assigned site position. Each building is its
 // own selectable/hideable group in the Scene Explorer sidebar — this is the
-// "estate is not reduced to one house" requirement made concrete.
+// "estate is not reduced to one house" requirement made concrete. In "Edit
+// layout" mode, a whole building can be dragged to a new plot or spun in
+// place with the same gizmo the single-building editor uses, constrained to
+// the ground plane / vertical axis so a building can't be dragged into the
+// air or tipped over.
 export default function SceneViewer({ site, buildings, onFocusBuilding }) {
   const mountRef = useRef(null);
   const groupsRef = useRef([]);
   const meshesByBuildingRef = useRef({});
   const cameraRef = useRef(null);
   const controlsRef = useRef(null);
+  const transformRef = useRef(null);
   const [buildError, setBuildError] = useState(null);
   const [hiddenIds, setHiddenIds] = useState({});
   const [activeId, setActiveId] = useState(null);
   const [selectedInfo, setSelectedInfo] = useState(null);
+  const [layoutEditMode, setLayoutEditMode] = useState(false);
+  const [transformMode, setTransformMode] = useState('translate');
+  const layoutEditModeRef = useRef(false);
+  const transformModeRef = useRef('translate');
   const groupRootRef = useRef(null);
 
   const siteWidth = site?.width || 60;
   const siteDepth = site?.depth || 60;
+
+  useEffect(() => { layoutEditModeRef.current = layoutEditMode; }, [layoutEditMode]);
+  useEffect(() => {
+    transformModeRef.current = transformMode;
+    if (transformRef.current) {
+      transformRef.current.setMode(transformMode);
+      // A building may only slide across the ground plane, or spin around
+      // the vertical axis — never lift off the ground or tip over.
+      transformRef.current.showX = transformMode === 'translate';
+      transformRef.current.showY = transformMode === 'rotate';
+      transformRef.current.showZ = transformMode === 'translate';
+    }
+  }, [transformMode]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -94,6 +117,8 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
         const [x, z] = b.position || [0, 0];
         bGroup.position.set(x, 0, z);
         bGroup.rotation.y = b.rotation || 0;
+        bGroup.userData.originalPosition = bGroup.position.clone();
+        bGroup.userData.originalRotationY = bGroup.rotation.y;
         const meshes = buildBuildingMeshes(b.modelSpec?.parts || []);
         meshes.forEach(m => bGroup.add(m));
         bGroup.userData.buildingId = b.id;
@@ -126,11 +151,28 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
       shadowDisc.visible = false;
       scene.add(shadowDisc);
 
+      // Layout gizmo: drag a whole building to a new plot, or spin it in
+      // place — same TransformControls the single-building editor uses,
+      // attached to the building's Group instead of one of its meshes.
+      const transformControls = new TransformControls(camera, renderer.domElement);
+      transformControls.setMode(transformModeRef.current);
+      transformControls.showX = transformModeRef.current === 'translate';
+      transformControls.showY = transformModeRef.current === 'rotate';
+      transformControls.showZ = transformModeRef.current === 'translate';
+      transformControls.setSize(0.9);
+      transformControls.enabled = false;
+      transformControls.visible = false;
+      const gizmoHelper = transformControls.getHelper ? transformControls.getHelper() : transformControls;
+      scene.add(gizmoHelper);
+      transformRef.current = transformControls;
+      transformControls.addEventListener('dragging-changed', (e) => { controls.enabled = !e.value; });
+
       const raycaster = new THREE.Raycaster();
       const pointerNdc = new THREE.Vector2();
       let downPos = null;
       const onPointerDown = (e) => { downPos = { x: e.clientX, y: e.clientY }; };
       const onPointerUp = (e) => {
+        if (transformControls.dragging) return;
         if (downPos) {
           const moved = Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y);
           if (moved > 6) return;
@@ -154,8 +196,17 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
             material: target.userData.material || null,
             buildingName: parentGroup.userData.buildingName,
           });
+          if (layoutEditModeRef.current) {
+            transformControls.attach(parentGroup);
+            transformControls.setMode(transformModeRef.current);
+            transformControls.enabled = true;
+            transformControls.visible = true;
+          }
         } else {
           setSelectedInfo(null);
+          transformControls.detach();
+          transformControls.enabled = false;
+          transformControls.visible = false;
         }
       };
       renderer.domElement.addEventListener('pointerdown', onPointerDown);
@@ -182,6 +233,7 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
         window.removeEventListener('resize', handleResize);
         renderer.domElement.removeEventListener('pointerdown', onPointerDown);
         renderer.domElement.removeEventListener('pointerup', onPointerUp);
+        transformControls.dispose();
         controls.dispose();
         renderer.dispose();
         scene.environment?.dispose?.();
@@ -200,6 +252,27 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
       g.visible = !hiddenIds[g.userData.buildingId];
     });
   }, [hiddenIds]);
+
+  useEffect(() => {
+    if (!layoutEditMode && transformRef.current) {
+      transformRef.current.detach();
+      transformRef.current.enabled = false;
+      transformRef.current.visible = false;
+    }
+  }, [layoutEditMode]);
+
+  const resetLayout = () => {
+    groupsRef.current.forEach(g => {
+      if (g.userData.originalPosition) g.position.copy(g.userData.originalPosition);
+      if (g.userData.originalRotationY != null) g.rotation.y = g.userData.originalRotationY;
+    });
+    if (transformRef.current) {
+      transformRef.current.detach();
+      transformRef.current.enabled = false;
+      transformRef.current.visible = false;
+    }
+    setSelectedInfo(null);
+  };
 
   const focusBuilding = (b) => {
     setActiveId(b.id);
@@ -256,9 +329,24 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
       <div className="split-main">
         <div className="viewer-shell">
           <span className="viewer-tag">Estate preview · drag to orbit · tap a building for details</span>
+          {layoutEditMode && (
+            <span className="viewer-hint">
+              {selectedInfo ? `Editing: ${selectedInfo.buildingName} — drag to ${transformMode === 'rotate' ? 'spin' : 'reposition'}` : 'Tap any building to select it'}
+            </span>
+          )}
           <div className="viewer-canvas" ref={mountRef} style={{ height: 420 }} />
           <PartInfoPanel info={selectedInfo} onClose={() => setSelectedInfo(null)} />
           <div className="viewer-controls">
+            {layoutEditMode && <button onClick={resetLayout}>Reset layout</button>}
+            {layoutEditMode && (
+              <>
+                <button className={transformMode === 'translate' ? 'active' : ''} onClick={() => setTransformMode('translate')}>Move</button>
+                <button className={transformMode === 'rotate' ? 'active' : ''} onClick={() => setTransformMode('rotate')}>Rotate</button>
+              </>
+            )}
+            <button className={layoutEditMode ? 'active' : ''} onClick={() => setLayoutEditMode(v => !v)}>
+              {layoutEditMode ? 'Done editing' : 'Edit layout'}
+            </button>
             <button onClick={exportGLB} title="Download the whole estate as a .glb 3D file">Export estate .glb</button>
           </div>
         </div>

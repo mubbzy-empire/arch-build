@@ -12,22 +12,28 @@ export default function ModelViewer({ modelSpec, title }) {
   const [wireframe, setWireframe] = useState(false);
   const [hideRoof, setHideRoof] = useState(false);
   const [editMode, setEditMode] = useState(false);
+  const [transformMode, setTransformMode] = useState('translate');
   const [selectedLabel, setSelectedLabel] = useState(null);
   const [selectedInfo, setSelectedInfo] = useState(null);
   const [colorOverrides, setColorOverrides] = useState({});
   const [buildError, setBuildError] = useState(null);
   const [storyView, setStoryView] = useState(false);
+  // The WebGL scene is expensive to build (geometry, textures, shadow maps)
+  // and isn't needed until the person actually wants to look at it — so we
+  // don't touch Three.js at all until they tap "View 3D model".
+  const [started, setStarted] = useState(false);
   const meshesRef = useRef([]);
   const transformRef = useRef(null);
   const sceneRef = useRef(null);
   const groupRef = useRef(null);
   const editModeRef = useRef(false);
+  const transformModeRef = useRef('translate');
 
   const parts = modelSpec?.parts || [];
   const hasRoof = parts.some(p => p.group === 'roof');
   const presentGroups = useMemo(() => {
     const seen = new Set(parts.map(p => p.group || 'structure'));
-    return ['structure', 'roof', 'door', 'window', 'interior', 'furniture'].filter(g => seen.has(g));
+    return ['structure', 'roof', 'door', 'window', 'interior', 'interior-door', 'balcony'].filter(g => seen.has(g));
   }, [modelSpec]);
   const presentFloors = useMemo(() => {
     const seen = new Set(parts.filter(p => p.group === 'structure' || !p.group).map(p => p.floor ?? 1));
@@ -38,15 +44,22 @@ export default function ModelViewer({ modelSpec, title }) {
     setHideRoof(false);
     setColorOverrides({});
     setEditMode(false);
+    setTransformMode('translate');
     setSelectedLabel(null);
     setSelectedInfo(null);
     setBuildError(null);
     setStoryView(false);
+    setStarted(false);
   }, [modelSpec]);
 
   useEffect(() => { editModeRef.current = editMode; }, [editMode]);
+  useEffect(() => {
+    transformModeRef.current = transformMode;
+    if (transformRef.current) transformRef.current.setMode(transformMode);
+  }, [transformMode]);
 
   useEffect(() => {
+    if (!started) return;
     const mount = mountRef.current;
     if (!mount) return;
 
@@ -148,9 +161,9 @@ export default function ModelViewer({ modelSpec, title }) {
       shadowDisc.position.set(center.x, box.min.y + 0.002, center.z);
       scene.add(shadowDisc);
 
-      // Click-to-select + drag gizmo (edit mode only), Blender-style.
+      // Click-to-select + drag/rotate gizmo (edit mode only), Blender-style.
       const transformControls = new TransformControls(camera, renderer.domElement);
-      transformControls.setMode('translate');
+      transformControls.setMode(transformModeRef.current);
       transformControls.setSize(0.9);
       transformControls.enabled = false;
       transformControls.visible = false;
@@ -189,6 +202,7 @@ export default function ModelViewer({ modelSpec, title }) {
           });
           if (editModeRef.current) {
             transformControls.attach(target);
+            transformControls.setMode(transformModeRef.current);
             transformControls.enabled = true;
             transformControls.visible = true;
           }
@@ -241,7 +255,7 @@ export default function ModelViewer({ modelSpec, title }) {
     }
 
     return () => cleanup();
-  }, [modelSpec]);
+  }, [modelSpec, started]);
 
   useEffect(() => {
     meshesRef.current.forEach(m => { m.material.wireframe = wireframe; });
@@ -269,6 +283,7 @@ export default function ModelViewer({ modelSpec, title }) {
   const resetPositions = () => {
     meshesRef.current.forEach(m => {
       if (m.userData.originalPosition) m.position.copy(m.userData.originalPosition);
+      if (m.userData.originalRotationY != null) m.rotation.y = m.userData.originalRotationY;
     });
     if (transformRef.current) {
       transformRef.current.detach();
@@ -329,22 +344,42 @@ export default function ModelViewer({ modelSpec, title }) {
     );
   }
 
+  if (!started) {
+    return (
+      <div className="viewer-shell">
+        <div className="viewer-launcher">
+          <span className="viewer-launcher-icon" />
+          <p className="page-sub">
+            The 3D model {hasRoof ? 'loads with the roof on — reveal the interior any time with the button below.' : 'is ready to load.'}
+          </p>
+          <button className="btn btn-primary" onClick={() => setStarted(true)}>View 3D model</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="viewer-shell">
       <span className="viewer-tag">3D preview · drag to orbit · tap a part for details</span>
       {editMode && (
-        <span className="viewer-hint">{selectedLabel ? `Editing: ${selectedLabel} — drag an arrow` : 'Tap a part to select it'}</span>
+        <span className="viewer-hint">{selectedLabel ? `Editing: ${selectedLabel} — drag to ${transformMode === 'rotate' ? 'rotate' : 'move'}` : 'Tap a part to select it'}</span>
       )}
       <div className="viewer-canvas" ref={mountRef} />
       <PartInfoPanel info={selectedInfo} onClose={() => setSelectedInfo(null)} />
       <div className="viewer-controls">
         {editMode && <button onClick={resetPositions}>Reset positions</button>}
+        {editMode && (
+          <>
+            <button className={transformMode === 'translate' ? 'active' : ''} onClick={() => setTransformMode('translate')}>Move</button>
+            <button className={transformMode === 'rotate' ? 'active' : ''} onClick={() => setTransformMode('rotate')}>Rotate</button>
+          </>
+        )}
         <button className={editMode ? 'active' : ''} onClick={() => setEditMode(v => !v)}>
           {editMode ? 'Done editing' : 'Edit parts'}
         </button>
         {hasRoof && (
           <button className={hideRoof ? 'active' : ''} onClick={() => setHideRoof(v => !v)}>
-            {hideRoof ? 'Show roof' : 'Interior view'}
+            {hideRoof ? 'Hide interior' : 'Show interior'}
           </button>
         )}
         {presentFloors.length > 1 && (

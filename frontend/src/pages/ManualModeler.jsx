@@ -5,6 +5,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { buildManualMeshes, getShadowTexture } from '../three/buildParts';
+import { drawBlueprint } from '../three/blueprint';
+import { analyzeBlueprint } from '../api/client';
 
 let idCounter = 0;
 const genId = () => `p${Date.now().toString(36)}${(idCounter++).toString(36)}`;
@@ -50,24 +52,33 @@ export default function ManualModeler() {
   const [editor, setEditor] = useState({ parts: [], history: [], future: [] });
   const [tool, setTool] = useState('select');
   const [selectedId, setSelectedId] = useState(null);
-  const [gizmoMode, setGizmoMode] = useState('translate');
-  const gizmoModeRef = useRef(gizmoMode);
   const [wallDraftActive, setWallDraftActive] = useState(false);
+  const [transformMode, setTransformMode] = useState('translate');
   const [title, setTitle] = useState('My design');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
   const [buildError, setBuildError] = useState(null);
 
+  const [blueprintOpen, setBlueprintOpen] = useState(false);
+  const [blueprintStats, setBlueprintStats] = useState(null);
+  const [blueprintAnalyzing, setBlueprintAnalyzing] = useState(false);
+  const [blueprintError, setBlueprintError] = useState(null);
+  const blueprintCanvasRef = useRef(null);
+
   const partsRef = useRef(editor.parts);
   const toolRef = useRef(tool);
   const selectedIdRef = useRef(selectedId);
   const wallDraftRef = useRef(null);
+  const transformModeRef = useRef('translate');
 
   useEffect(() => { partsRef.current = editor.parts; }, [editor.parts]);
   useEffect(() => { toolRef.current = tool; }, [tool]);
   useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
-  useEffect(() => { gizmoModeRef.current = gizmoMode; if (transformRef.current) transformRef.current.setMode(gizmoMode); }, [gizmoMode]);
   useEffect(() => { if (tool !== 'wall') { wallDraftRef.current = null; setWallDraftActive(false); } }, [tool]);
+  useEffect(() => {
+    transformModeRef.current = transformMode;
+    if (transformRef.current) transformRef.current.setMode(transformMode);
+  }, [transformMode]);
 
   const selectedPart = useMemo(() => editor.parts.find(p => p.id === selectedId) || null, [editor.parts, selectedId]);
 
@@ -191,7 +202,7 @@ export default function ManualModeler() {
       scene.add(draftMarker);
 
       const transformControls = new TransformControls(camera, renderer.domElement);
-      transformControls.setMode('translate');
+      transformControls.setMode(transformModeRef.current);
       transformControls.setSize(0.85);
       transformControls.enabled = false;
       transformControls.visible = false;
@@ -206,27 +217,18 @@ export default function ManualModeler() {
             : null;
         } else if (dragStartRef.current && transformControls.object) {
           const obj = transformControls.object;
-          const start = dragStartRef.current;
-          const delta = obj.position.clone().sub(start.position);
-          const rotDelta = obj.rotation.y - start.rotationY;
+          const delta = obj.position.clone().sub(dragStartRef.current.position);
+          const rotationChanged = Math.abs(obj.rotation.y - dragStartRef.current.rotationY) > 1e-4;
           const partId = obj.userData.partId;
-          const cosR = Math.cos(rotDelta), sinR = Math.sin(rotDelta);
           commit(prev => prev.map(p => {
             if (p.id === partId) {
-              return { ...p, position: [obj.position.x, obj.position.y, obj.position.z], rotation: obj.rotation.y };
+              const next = { ...p, position: [obj.position.x, obj.position.y, obj.position.z] };
+              if (rotationChanged) next.rotation = obj.rotation.y;
+              return next;
             }
-            // Openings attached to a wall (wallId) must move/rotate together with it
-            // so a door/window stays correctly seated in the wall it was cut into.
-            if (p.wallId === partId) {
+            if (p.wallId === partId && (delta.x !== 0 || delta.y !== 0 || delta.z !== 0)) {
               const [px, py, pz] = p.position;
-              if (rotDelta !== 0) {
-                const dx = px - start.position.x, dz = pz - start.position.z;
-                const rx = dx * cosR - dz * sinR, rz = dx * sinR + dz * cosR;
-                return { ...p, position: [obj.position.x + rx, py, obj.position.z + rz] };
-              }
-              if (delta.x !== 0 || delta.y !== 0 || delta.z !== 0) {
-                return { ...p, position: [px + delta.x, py + delta.y, pz + delta.z] };
-              }
+              return { ...p, position: [px + delta.x, py + delta.y, pz + delta.z] };
             }
             return p;
           }));
@@ -271,8 +273,8 @@ export default function ManualModeler() {
           if (hit) {
             const partId = hit.object.userData.partId;
             setSelectedId(partId);
-            transformControls.setMode(gizmoModeRef.current);
             transformControls.attach(hit.object);
+            transformControls.setMode(transformModeRef.current);
             transformControls.enabled = true;
             transformControls.visible = true;
           } else {
@@ -345,13 +347,13 @@ export default function ManualModeler() {
           if (!point) return;
           if (currentTool === 'box') {
             addPart({
-              id: genId(), type: 'box', group: 'furniture', floor: 1,
+              id: genId(), type: 'box', group: 'object', floor: 1,
               size: [0.8, 0.8, 0.8], position: [point.x, 0.4, point.z],
               material: 'wood', color: '#8a6d5c',
             });
           } else {
             addPart({
-              id: genId(), type: 'cylinder', group: 'furniture', floor: 1,
+              id: genId(), type: 'cylinder', group: 'object', floor: 1,
               radiusTop: 0.35, radiusBottom: 0.35, height: 0.8,
               position: [point.x, 0.4, point.z], material: 'metal',
             });
@@ -422,11 +424,57 @@ export default function ManualModeler() {
     if (tool !== 'select') {
       tc.detach(); tc.enabled = false; tc.visible = false;
     } else if (selectedId && meshMapRef.current[selectedId]) {
-      tc.setMode(gizmoMode);
       tc.attach(meshMapRef.current[selectedId][0]);
       tc.enabled = true; tc.visible = true;
     }
-  }, [tool, selectedId, gizmoMode]);
+  }, [tool, selectedId]);
+
+  // Redraw the 2D blueprint whenever the modal opens or the design changes
+  // while it's open, so it always reflects the current scene.
+  useEffect(() => {
+    if (!blueprintOpen) return;
+    const canvas = blueprintCanvasRef.current;
+    if (!canvas) return;
+    try {
+      const stats = drawBlueprint(canvas, editor.parts, { title });
+      setBlueprintStats(stats);
+    } catch (err) {
+      console.error('Blueprint generation failed:', err);
+    }
+  }, [blueprintOpen, editor.parts, title]);
+
+  const downloadBlueprint = () => {
+    const canvas = blueprintCanvasRef.current;
+    if (!canvas) return;
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${title.replace(/\s+/g, '-').toLowerCase() || 'blueprint'}.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }, 'image/png', 0.95);
+  };
+
+  const analyzeGeneratedBlueprint = () => {
+    const canvas = blueprintCanvasRef.current;
+    if (!canvas) return;
+    setBlueprintAnalyzing(true);
+    setBlueprintError(null);
+    canvas.toBlob(async (blob) => {
+      if (!blob) { setBlueprintAnalyzing(false); return; }
+      try {
+        const file = new File([blob], `${title || 'blueprint'}.png`, { type: 'image/png' });
+        const result = await analyzeBlueprint(file, `This blueprint was exported from a hand-built 3D design titled "${title}" — read it back and reconstruct it as accurately as possible.`);
+        navigate('/results', { state: { result } });
+      } catch (err) {
+        setBlueprintError(err.message || 'Could not analyze the generated blueprint.');
+      } finally {
+        setBlueprintAnalyzing(false);
+      }
+    }, 'image/png', 0.95);
+  };
 
   const saveDesign = async () => {
     setSaving(true);
@@ -448,7 +496,7 @@ export default function ManualModeler() {
   };
 
   const hintText = () => {
-    if (tool === 'select') return selectedPart ? (gizmoMode === 'rotate' ? 'Drag the ring to rotate' : 'Drag the arrow to move — use Rotate to turn it') : 'Tap a part to select it';
+    if (tool === 'select') return selectedPart ? 'Drag the arrow to move — use the panel to edit size/material' : 'Tap a part to select it';
     if (tool === 'wall') return wallDraftActive ? "Tap the wall's end point" : "Tap the wall's start point";
     if (tool === 'door' || tool === 'window') return `Tap an existing wall to place a ${tool}`;
     return 'Tap the ground to place it';
@@ -473,14 +521,21 @@ export default function ManualModeler() {
         ))}
         <button className="btn btn-ghost" onClick={undo} disabled={!editor.history.length}>Undo</button>
         <button className="btn btn-ghost" onClick={redo} disabled={!editor.future.length}>Redo</button>
+        <button
+          className={transformMode === 'translate' ? 'btn btn-primary' : 'btn btn-secondary'}
+          onClick={() => setTransformMode('translate')}
+          title="Move the selected part"
+        >
+          Move
+        </button>
+        <button
+          className={transformMode === 'rotate' ? 'btn btn-primary' : 'btn btn-secondary'}
+          onClick={() => setTransformMode('rotate')}
+          title="Rotate the selected part — works best on freestanding boxes/cylinders, since rotating a wall won't carry its doors and windows along with it"
+        >
+          Rotate
+        </button>
       </div>
-
-      {tool === 'select' && selectedPart && (
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className={gizmoMode === 'translate' ? 'btn btn-primary' : 'btn btn-secondary'} onClick={() => setGizmoMode('translate')}>Move</button>
-          <button className={gizmoMode === 'rotate' ? 'btn btn-primary' : 'btn btn-secondary'} onClick={() => setGizmoMode('rotate')}>Rotate</button>
-        </div>
-      )}
 
       {buildError ? (
         <div className="viewer-shell" style={{ minHeight: 220, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
@@ -546,12 +601,40 @@ export default function ManualModeler() {
             <div className="section-head"><h3>Save design</h3></div>
             <input type="text" placeholder="Design title" value={title} onChange={e => setTitle(e.target.value)} style={{ marginBottom: 10 }} />
             {saveError && <p style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 10 }}>{saveError}</p>}
-            <button className="btn btn-primary btn-block" disabled={!editor.parts.length || saving} onClick={saveDesign}>
+            <button className="btn btn-primary btn-block" disabled={!editor.parts.length || saving} onClick={saveDesign} style={{ marginBottom: 8 }}>
               {saving ? 'Saving…' : 'Save & view'}
+            </button>
+            <button className="btn btn-secondary btn-block" disabled={!editor.parts.length} onClick={() => setBlueprintOpen(true)}>
+              Generate blueprint
             </button>
           </div>
         </div>
       </div>
+
+      {blueprintOpen && (
+        <div className="modal-overlay" onClick={() => setBlueprintOpen(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="section-head"><h3>Blueprint — {title}</h3></div>
+            <div className="blueprint-preview">
+              <canvas ref={blueprintCanvasRef} style={{ width: '100%', height: 420 }} />
+            </div>
+            {blueprintStats && (
+              <p className="page-sub" style={{ fontSize: 12.5, marginTop: 10 }}>
+                {blueprintStats.wallCount} walls · {blueprintStats.doorCount} doors · {blueprintStats.windowCount} windows
+                {blueprintStats.objectCount ? ` · ${blueprintStats.objectCount} freestanding objects (shown dashed)` : ''}
+              </p>
+            )}
+            {blueprintError && <p style={{ color: 'var(--danger)', fontSize: 13, marginTop: 10 }}>{blueprintError}</p>}
+            <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
+              <button className="btn btn-primary" style={{ flex: 1 }} onClick={downloadBlueprint}>Download PNG</button>
+              <button className="btn btn-secondary" style={{ flex: 1 }} disabled={blueprintAnalyzing} onClick={analyzeGeneratedBlueprint}>
+                {blueprintAnalyzing ? 'Analyzing…' : 'Re-analyze with AI'}
+              </button>
+              <button className="btn btn-ghost" onClick={() => setBlueprintOpen(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

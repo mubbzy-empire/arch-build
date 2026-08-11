@@ -96,6 +96,10 @@ for (const stmt of [
   // 'estate' alongside existing 'blueprint' | 'chat' source types; site_json
   // holds site-level data (footprint size, road gap) for estate projects.
   'ALTER TABLE projects ADD COLUMN site_json TEXT',
+  // What the AI actually read off an uploaded blueprint (rooms, doors,
+  // windows, floor count, scale notes) before it generated any geometry —
+  // stored so the "what we detected" panel survives a reload.
+  'ALTER TABLE projects ADD COLUMN detected_json TEXT',
 ]) {
   try { db.exec(stmt); } catch (e) { /* already exists */ }
 }

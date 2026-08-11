@@ -4,7 +4,7 @@ import { sendChatMessage } from '../api/client';
 
 const WELCOME = {
   role: 'assistant',
-  content: "Describe the space you want designed — for example \"a modern three-bedroom house with an open kitchen and large living-room windows.\" I'll furnish and color it, then draft dimensions, materials, equipment, and a 3D model you can edit.",
+  content: "Describe the space you want designed — for example \"a modern three-bedroom house with an open kitchen and large living-room windows.\" I'll draft the architecture and color it, then put together dimensions, materials, equipment, and a 3D model you can edit.",
 };
 
 export default function Chat() {
@@ -69,7 +69,7 @@ export default function Chat() {
         {sending && (
           <div className="bubble assistant">
             <div className="eyebrow">Arch-3d build</div>
-            <p style={{ color: 'var(--text-muted)' }}>Furnishing and drafting a concept…</p>
+            <p style={{ color: 'var(--text-muted)' }}>Drafting a concept…</p>
           </div>
         )}
       </div>

@@ -3,7 +3,7 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { Brush, Evaluator, SUBTRACTION } from 'three-bvh-csg';
 
 export const MATERIAL_COLORS = { wood: 0xb98a55, metal: 0xaab2bd, glass: 0x8fd0e0, fabric: 0x6f6a63 };
-export const GROUP_LABELS = { structure: 'Walls', roof: 'Roof', door: 'Door', window: 'Windows', interior: 'Interior', furniture: 'Furniture' };
+export const GROUP_LABELS = { structure: 'Walls', roof: 'Roof', door: 'Door', window: 'Windows', interior: 'Interior', 'interior-door': 'Interior door', balcony: 'Balcony', object: 'Object' };
 
 // ---------------------------------------------------------------------------
 // Cheap procedural textures — generated once on a <canvas> and cached at
@@ -113,81 +113,184 @@ export function buildMesh(part) {
   mesh.userData.room = part.room || null;
   mesh.userData.material = part.material || null;
   mesh.userData.originalPosition = mesh.position.clone();
+  mesh.userData.originalRotationY = mesh.rotation.y;
   return mesh;
 }
 
 // ---------------------------------------------------------------------------
-// Door/window fill assembly, shared by both the whole-building envelope
-// path (buildHollowShell) and the per-wall manual-modeler path
-// (buildWallWithOpenings). A door becomes a single solid panel. A window
-// becomes THREE parts layered along the wall's thin (through-wall) axis —
-// an outer frame (fills the whole cut opening), an inset glass pane sitting
-// slightly proud of the frame, and — for openings bigger than ~0.7m — a
-// thin mullion cross-bar — so it reads as an assembled window rather than a
-// flat colored rectangle in a hole.
-//
-// `dims` is the opening's own [width, height, depth] as authored on the
-// part; `thinIdx` is whichever of those three axes runs through the wall's
-// thickness; `thickness` is the WALL's real thickness (not the opening's
-// own often-arbitrary thin dimension) so the frame/glass/mullion are sized
-// to the wall they're actually sitting in.
+// Small standalone decoration mesh — used for window frames/mullions/sills,
+// door frames/handles, balcony rails, and floor-line trim bands. Always a
+// flat Mesh (never a Group) so it behaves exactly like every other part in
+// the viewer's flat mesh list: individually selectable, disposable, and
+// affected by the wireframe/recolor controls.
 // ---------------------------------------------------------------------------
-function withThin(dims, thinIdx, thinValue, faceScale) {
-  return dims.map((v, i) => (i === thinIdx ? thinValue : v * faceScale));
+function makeTrimMesh({ geometry, x, y, z, rotY = 0, material = 'metal', color, group = 'structure', room = null, castShadow = true }) {
+  const mesh = new THREE.Mesh(geometry, makeMaterial(material, color));
+  mesh.position.set(x, y, z);
+  mesh.rotation.y = rotY;
+  mesh.castShadow = castShadow;
+  mesh.receiveShadow = true;
+  mesh.userData.group = group;
+  mesh.userData.room = room;
+  mesh.userData.material = material;
+  mesh.userData.originalPosition = mesh.position.clone();
+  mesh.userData.originalRotationY = mesh.rotation.y;
+  return mesh;
 }
 
-function buildOpeningFill(part, dims, thinIdx, thickness) {
-  const isDoor = part.group === 'door';
-  const [x, y, z] = part.position || [0, 0, 0];
-  const rotY = part.rotation || 0;
-  const frameColor = part.frameColor || '#e7e2d6';
-  const meshes = [];
+// Builds the extra dressing meshes (frame + mullions + sill, or frame +
+// threshold + handle) that turn a bare glazed/panelled opening into
+// something that reads as an architectural window or door instead of a
+// flat colored rectangle. `dims` is [width, height, thickness] in the
+// opening's own local frame (local +X = width axis, local +Z = thickness /
+// outward-facing axis), and `rotY` is the rotation that carries that local
+// frame onto the actual wall — this is the same convention used for a
+// manually-drawn wall's own rotation, so one function serves both the
+// AI/blueprint envelope path and the hand-drawn wall path.
+function buildOpeningDetail({ group, dims, position, rotY = 0, material, color, room }) {
+  const [ow, oh, od] = dims;
+  const [cx, cy, cz] = position;
+  const cos = Math.cos(rotY), sin = Math.sin(rotY);
+  const toWorld = (lx, lz) => [cx + lx * cos + lz * sin, cz - lx * sin + lz * cos];
+  const isDoor = group === 'door';
+  const frameT = Math.max(0.045, Math.min(ow, oh) * 0.06);
+  const frameColor = isDoor ? '#5a3d24' : '#eee7d8';
+  const frameMat = isDoor ? 'wood' : 'metal';
+  const frameD = Math.max(od * 1.3, 0.03);
+  const faceOut = od * 0.55 + 0.006;
 
-  const place = (mesh) => {
-    mesh.position.set(x, y, z);
-    mesh.rotation.y = rotY;
-    mesh.receiveShadow = true;
-    mesh.userData.group = part.group || 'window';
-    mesh.userData.room = part.room || null;
-    mesh.userData.material = part.material || (isDoor ? 'wood' : 'glass');
-    mesh.userData.originalPosition = mesh.position.clone();
-    meshes.push(mesh);
-    return mesh;
+  const meshes = [];
+  const push = (lx, y, lz, sx, sy, sz, mat, col, cast = true) => {
+    const [wx, wz] = toWorld(lx, lz);
+    meshes.push(makeTrimMesh({ geometry: new THREE.BoxGeometry(sx, sy, sz), x: wx, y, z: wz, rotY, material: mat, color: col, group, room, castShadow: cast }));
+  };
+  const pushSphere = (lx, y, lz, r, mat, col) => {
+    const [wx, wz] = toWorld(lx, lz);
+    meshes.push(makeTrimMesh({ geometry: new THREE.SphereGeometry(r, 8, 8), x: wx, y, z: wz, rotY, material: mat, color: col, group, room, castShadow: false }));
   };
 
-  if (isDoor) {
-    const panelDims = withThin(dims, thinIdx, thickness * 0.6, 0.94);
-    const geo = new RoundedBoxGeometry(panelDims[0], panelDims[1], panelDims[2], 1, Math.min(0.02, panelDims[0] * 0.05));
-    const panel = new THREE.Mesh(geo, makeMaterial(part.material || 'wood', part.color));
-    panel.castShadow = true;
-    place(panel);
-    return meshes;
+  // Top lintel (and, for windows, a matching bottom rail).
+  push(0, cy + oh / 2 - frameT / 2, faceOut, ow + frameT * 0.6, frameT, frameD, frameMat, frameColor);
+  if (!isDoor) push(0, cy - oh / 2 + frameT / 2, faceOut, ow + frameT * 0.6, frameT, frameD, frameMat, frameColor);
+  // Side jambs.
+  const jambY = isDoor ? cy + frameT / 2 : cy;
+  const jambH = oh + (isDoor ? frameT : 0);
+  push(-ow / 2 + frameT / 2, jambY, faceOut, frameT, jambH, frameD, frameMat, frameColor);
+  push(ow / 2 - frameT / 2, jambY, faceOut, frameT, jambH, frameD, frameMat, frameColor);
+
+  if (!isDoor) {
+    const mullionT = frameT * 0.55;
+    push(0, cy, 0, mullionT, oh - frameT * 2, od * 0.7, frameMat, frameColor, false);
+    push(0, cy, 0, ow - frameT * 2, mullionT, od * 0.7, frameMat, frameColor, false);
+    // Sill: a small ledge projecting outward below the glazing.
+    push(0, cy - oh / 2 - 0.03, od * 1.6, ow + frameT * 1.6, 0.05, od * 4, 'metal', '#cfc9ba');
+  } else {
+    // Threshold at the foot, and a door handle.
+    push(0, cy - oh / 2 + 0.015, od * 2, ow + frameT * 1.4, 0.03, od * 5, 'metal', '#8b8f96');
+    pushSphere(ow * 0.34, cy, faceOut + 0.02, 0.02, 'metal', '#d8d4c8');
   }
+  return meshes;
+}
 
-  const frameDims = withThin(dims, thinIdx, thickness * 0.85, 1.0);
-  const frame = new THREE.Mesh(new THREE.BoxGeometry(frameDims[0], frameDims[1], frameDims[2]), makeMaterial('metal', frameColor));
-  place(frame);
+// ---------------------------------------------------------------------------
+// Balcony: a projecting slab at floor level with a railing (top rail, two
+// corner posts, and evenly spaced balusters) rather than a bare box. Part
+// convention: size = [width, (unused), depth], position = the slab's top
+// surface at the wall face, rotation = which way it faces (0 = +Z, radians)
+// — the same rotation convention used elsewhere for oriented parts.
+// ---------------------------------------------------------------------------
+export function buildBalconyMeshes(part) {
+  const [width, , depth] = part.size || [1.8, 0.1, 1.0];
+  const rot = part.rotation || 0;
+  const [cx, cy, cz] = part.position || [0, 1, 0];
+  const room = part.room || null;
+  const cos = Math.cos(rot), sin = Math.sin(rot);
+  const toWorld = (lx, lz) => [cx + lx * cos + lz * sin, cz - lx * sin + lz * cos];
+  const meshes = [];
+  const slabT = 0.1;
+  const railH = 0.95;
+  const railColor = '#7d838c';
 
-  const glassDims = withThin(dims, thinIdx, thickness * 1.0, 0.84);
-  const glass = new THREE.Mesh(new THREE.BoxGeometry(glassDims[0], glassDims[1], glassDims[2]), makeMaterial(part.material || 'glass', part.color));
-  place(glass);
+  const [sx, sz] = toWorld(0, depth / 2);
+  meshes.push(makeTrimMesh({ geometry: new THREE.BoxGeometry(width, slabT, depth), x: sx, y: cy - slabT / 2, z: sz, rotY: rot, material: part.material || 'wood', color: part.color || '#c9b28a', group: 'balcony', room }));
 
-  const faceIdxs = [0, 1, 2].filter(i => i !== thinIdx);
-  const [wi, hi] = faceIdxs;
-  if (dims[wi] > 0.7 && dims[hi] > 0.7) {
-    const barThin = thickness * 1.05;
-    const vDims = withThin(dims, thinIdx, barThin, 0.84);
-    vDims[wi] = Math.min(dims[wi] * 0.05, 0.04);
-    const vBar = new THREE.Mesh(new THREE.BoxGeometry(vDims[0], vDims[1], vDims[2]), makeMaterial('metal', frameColor));
-    place(vBar);
+  const [rx, rz] = toWorld(0, depth - 0.02);
+  meshes.push(makeTrimMesh({ geometry: new THREE.BoxGeometry(width, 0.05, 0.05), x: rx, y: cy + railH, z: rz, rotY: rot, material: 'metal', color: railColor, group: 'balcony', room, castShadow: false }));
 
-    const hDims = withThin(dims, thinIdx, barThin, 0.84);
-    hDims[hi] = Math.min(dims[hi] * 0.05, 0.04);
-    const hBar = new THREE.Mesh(new THREE.BoxGeometry(hDims[0], hDims[1], hDims[2]), makeMaterial('metal', frameColor));
-    place(hBar);
+  const count = Math.max(3, Math.round(width / 0.24));
+  for (let i = 0; i <= count; i++) {
+    const lx = -width / 2 + (width * i) / count;
+    const [bx, bz] = toWorld(lx, depth - 0.02);
+    meshes.push(makeTrimMesh({ geometry: new THREE.BoxGeometry(0.03, railH, 0.03), x: bx, y: cy + railH / 2, z: bz, rotY: rot, material: 'metal', color: railColor, group: 'balcony', room, castShadow: false }));
   }
+  // Side posts closing the railing back to the wall.
+  [-width / 2, width / 2].forEach(lx => {
+    const [px, pz] = toWorld(lx, depth * 0.5);
+    meshes.push(makeTrimMesh({ geometry: new THREE.BoxGeometry(0.04, railH, depth), x: px, y: cy + railH / 2, z: pz, rotY: rot, material: 'metal', color: railColor, group: 'balcony', room, castShadow: false }));
+  });
 
   return meshes;
+}
+
+// ---------------------------------------------------------------------------
+// Real hip roof: four sloped rectangular planes (two trapezoids, two
+// triangular hips) meeting a ridge line, sized to a rectangular footprint.
+// Replaces the old convention of approximating a "hip roof" with a circular
+// cone (radiusTop ~0) sat on a rectangular building — a round cone over a
+// rectangular footprint overhangs unevenly at the corners and never actually
+// meets the walls cleanly, which is the single biggest reason a generated
+// building fails to read as a real house. This builds an exact match to the
+// footprint instead, with a flat ridge and consistent eave overhang all the
+// way around.
+// ---------------------------------------------------------------------------
+export function buildHipRoofMesh({ width, depth, ridgeHeight, overhang = 0.4, position, material = 'metal', color, group = 'roof', floor }) {
+  const halfW = width / 2 + overhang;
+  const halfD = depth / 2 + overhang;
+  const alongX = width >= depth;
+  const majorHalf = alongX ? halfW : halfD;
+  const minorHalf = alongX ? halfD : halfW;
+  const ridgeHalf = Math.max(majorHalf - minorHalf, Math.min(majorHalf, minorHalf) * 0.15, 0.1);
+
+  const e1 = [-halfW, 0, -halfD], e2 = [halfW, 0, -halfD], e3 = [halfW, 0, halfD], e4 = [-halfW, 0, halfD];
+  const r1 = alongX ? [-ridgeHalf, ridgeHeight, 0] : [0, ridgeHeight, -ridgeHalf];
+  const r2 = alongX ? [ridgeHalf, ridgeHeight, 0] : [0, ridgeHeight, ridgeHalf];
+
+  const tris = [];
+  const addQuad = (a, b, c, d) => tris.push(a, b, c, a, c, d);
+  const addTri = (a, b, c) => tris.push(a, b, c);
+
+  if (alongX) {
+    addQuad(e1, e2, r2, r1); // front slope (-Z)
+    addQuad(e3, e4, r1, r2); // back slope (+Z)
+    addTri(e4, e1, r1);      // left hip (-X)
+    addTri(e2, e3, r2);      // right hip (+X)
+  } else {
+    addQuad(e2, e3, r2, r1); // right slope (+X)
+    addQuad(e4, e1, r1, r2); // left slope (-X)
+    addTri(e1, e2, r1);      // front hip (-Z)
+    addTri(e3, e4, r2);      // back hip (+Z)
+  }
+
+  const positions = new Float32Array(tris.length * 3);
+  tris.forEach((v, i) => { positions[i * 3] = v[0]; positions[i * 3 + 1] = v[1]; positions[i * 3 + 2] = v[2]; });
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.computeVertexNormals();
+
+  const mat = makeMaterial(material, color);
+  mat.side = THREE.DoubleSide; // robust to any face winding, since the underside is never meant to be seen anyway
+  const mesh = new THREE.Mesh(geometry, mat);
+  const [cx, cy, cz] = position;
+  mesh.position.set(cx, cy, cz);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.userData.group = group;
+  mesh.userData.room = null;
+  mesh.userData.material = material;
+  if (floor != null) mesh.userData.floor = floor;
+  mesh.userData.originalPosition = mesh.position.clone();
+  mesh.userData.originalRotationY = 0;
+  return mesh;
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +313,8 @@ export function buildHollowShell(structurePart, openingParts) {
 
   const fillMeshes = [];
   for (const part of openingParts) {
-    const dims = part.size || [0.9, 1.2, 0.05];
+    const [ow, oh, od] = part.size || [0.9, 1.2, 0.05];
+    const dims = [ow, oh, od];
     const thinIdx = dims.indexOf(Math.min(...dims));
     const cutDims = [...dims];
     cutDims[thinIdx] = thickness * 4;
@@ -221,7 +325,46 @@ export function buildHollowShell(structurePart, openingParts) {
     cutter.updateMatrixWorld();
     shellBrush = evaluator.evaluate(shellBrush, cutter, SUBTRACTION);
 
-    fillMeshes.push(...buildOpeningFill(part, dims, thinIdx, thickness));
+    const fillDims = [...dims];
+    fillDims[thinIdx] = thickness * 0.9;
+    const isDoor = part.group === 'door';
+    const fillGeo = isDoor
+      ? new RoundedBoxGeometry(fillDims[0], fillDims[1], fillDims[2], 1, Math.min(0.02, fillDims[0] * 0.05))
+      : new THREE.BoxGeometry(fillDims[0], fillDims[1], fillDims[2]);
+    const fillMesh = new THREE.Mesh(fillGeo, makeMaterial(part.material || (isDoor ? 'wood' : 'glass'), part.color));
+    fillMesh.position.set(x, y, z);
+    fillMesh.castShadow = isDoor;
+    fillMesh.receiveShadow = true;
+    fillMesh.userData.group = part.group || 'window';
+    fillMesh.userData.room = part.room || null;
+    fillMesh.userData.material = part.material || (isDoor ? 'wood' : 'glass');
+    fillMesh.userData.originalPosition = fillMesh.position.clone();
+    fillMesh.userData.originalRotationY = fillMesh.rotation.y;
+    fillMeshes.push(fillMesh);
+
+    // Frame, mullions/sill (windows) or frame/threshold/handle (doors) —
+    // reorient the opening's own dims into the [width, height, thickness]
+    // local frame buildOpeningDetail expects, and pick the rotY that carries
+    // that local frame onto whichever face of the building this opening is
+    // actually on (still world-axis-aligned here since the envelope itself
+    // is never rotated, but +Z/-Z and +X/-X faces need opposite rotations).
+    let detailDims = dims;
+    let detailRotY = 0;
+    if (thinIdx === 2) {
+      detailRotY = z >= 0 ? 0 : Math.PI;
+    } else if (thinIdx === 0) {
+      detailDims = [od, oh, ow];
+      detailRotY = x >= 0 ? Math.PI / 2 : -Math.PI / 2;
+    } else {
+      detailDims = null; // skylight-style opening (rare) — skip detailing
+    }
+    if (detailDims) {
+      const detailMeshes = buildOpeningDetail({
+        group: part.group || 'window', dims: detailDims, position: [x, y, z], rotY: detailRotY,
+        material: part.material, color: part.color, room: part.room || null,
+      });
+      fillMeshes.push(...detailMeshes);
+    }
   }
 
   shellBrush.material = makeMaterial(structurePart.material || 'wood', structurePart.color);
@@ -231,6 +374,7 @@ export function buildHollowShell(structurePart, openingParts) {
   shellBrush.userData.room = null;
   shellBrush.userData.material = structurePart.material || 'wood';
   shellBrush.userData.originalPosition = shellBrush.position.clone();
+  shellBrush.userData.originalRotationY = shellBrush.rotation.y;
 
   return { shellMesh: shellBrush, fillMeshes };
 }
@@ -263,25 +407,45 @@ export function buildWallWithOpenings(wallPart, openingParts) {
     solid.userData.room = null;
     solid.userData.material = wallPart.material || 'wood';
     solid.userData.originalPosition = solid.position.clone();
-    return { wallMesh: solid, fillGroups: [] };
+    solid.userData.originalRotationY = solid.rotation.y;
+    return { wallMesh: solid, fillMeshes: [] };
   }
 
   const evaluator = new Evaluator();
   let shellBrush = wallBrush;
-  const fillGroups = [];
+  const fillMeshes = [];
 
   for (const part of openingParts) {
-    const dims = part.size || [0.9, 1.2, 0.2];
-    const [ox, oy, oz] = part.position || [wx, (dims[1] || 1.2) / 2, wz];
-    const thinIdx = 2; // manual-modeler openings are always authored with depth (index 2) as the through-wall axis
+    const [ow, oh, od] = part.size || [0.9, 1.2, 0.2];
+    const [ox, oy, oz] = part.position || [wx, oh / 2, wz];
+    const isDoor = part.group === 'door';
 
-    const cutter = new Brush(new THREE.BoxGeometry(dims[0], dims[1], Math.max(dims[2], d * 3)));
+    const cutter = new Brush(new THREE.BoxGeometry(ow, oh, Math.max(od, d * 3)));
     cutter.position.set(ox, oy, oz);
     cutter.rotation.y = rotY;
     cutter.updateMatrixWorld();
     shellBrush = evaluator.evaluate(shellBrush, cutter, SUBTRACTION);
 
-    fillGroups.push(buildOpeningFill({ ...part, position: [ox, oy, oz], rotation: rotY }, dims, thinIdx, d));
+    const fillMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(ow * 0.94, oh, Math.max(d * 0.85, 0.04)),
+      makeMaterial(part.material || (isDoor ? 'wood' : 'glass'), part.color)
+    );
+    fillMesh.position.set(ox, oy, oz);
+    fillMesh.rotation.y = rotY;
+    fillMesh.castShadow = isDoor;
+    fillMesh.receiveShadow = true;
+    fillMesh.userData.group = part.group;
+    fillMesh.userData.room = part.room || null;
+    fillMesh.userData.material = part.material || (isDoor ? 'wood' : 'glass');
+    fillMesh.userData.originalPosition = fillMesh.position.clone();
+    fillMesh.userData.originalRotationY = fillMesh.rotation.y;
+    fillMeshes.push(fillMesh);
+
+    const detailMeshes = buildOpeningDetail({
+      group: part.group, dims: [ow, oh, Math.max(od, 0.06)], position: [ox, oy, oz], rotY,
+      material: part.material, color: part.color, room: part.room || null,
+    });
+    fillMeshes.push(...detailMeshes);
   }
 
   shellBrush.material = makeMaterial(wallPart.material || 'wood', wallPart.color);
@@ -291,8 +455,9 @@ export function buildWallWithOpenings(wallPart, openingParts) {
   shellBrush.userData.room = null;
   shellBrush.userData.material = wallPart.material || 'wood';
   shellBrush.userData.originalPosition = shellBrush.position.clone();
+  shellBrush.userData.originalRotationY = shellBrush.rotation.y;
 
-  return { wallMesh: shellBrush, fillGroups };
+  return { wallMesh: shellBrush, fillMeshes };
 }
 
 // Builds the full mesh list for the manual modeler's flat parts array.
@@ -312,24 +477,18 @@ export function buildManualMeshes(parts) {
 
   walls.forEach(wall => {
     const wallOpenings = openings.filter(o => o.wallId === wall.id);
-    const { wallMesh, fillGroups } = buildWallWithOpenings(wall, wallOpenings);
+    const { wallMesh, fillMeshes } = buildWallWithOpenings(wall, wallOpenings);
     wallMesh.userData.partId = wall.id;
     wallMesh.userData.floor = wall.floor ?? 1;
     meshes.push(wallMesh);
     idToMeshes[wall.id] = [wallMesh];
-
-    // fillGroups[i] is the (1, 2, or 4-mesh) group belonging to
-    // wallOpenings[i] — buildWallWithOpenings returns them in the same
-    // order it received them, so this is a direct positional match, no
-    // guessing about how many meshes a given opening produced.
     wallOpenings.forEach((o, i) => {
-      const group = fillGroups[i] || [];
-      group.forEach(fm => {
-        fm.userData.partId = o.id;
-        fm.userData.floor = wall.floor ?? 1;
-        meshes.push(fm);
-      });
-      idToMeshes[o.id] = group;
+      const fm = fillMeshes[i];
+      if (!fm) return;
+      fm.userData.partId = o.id;
+      fm.userData.floor = wall.floor ?? 1;
+      meshes.push(fm);
+      idToMeshes[o.id] = [fm];
     });
   });
 
@@ -345,118 +504,65 @@ export function buildManualMeshes(parts) {
 }
 
 // ---------------------------------------------------------------------------
-// Procedural roofs. Rather than trust the AI to hand-place a roof primitive
-// at the right size — a common source of roofs that float, clip through
-// walls, or don't match a rectangular footprint (a cone never really fits a
-// non-square building) — a roof part that specifies a "roofStyle" gets its
-// actual geometry computed here directly from the matching floor's real
-// envelope footprint, so it is geometrically guaranteed to fit regardless
-// of what numbers the AI put on the part itself. Roof parts without a
-// roofStyle (older saved designs) still render via the generic box/cylinder
-// path in buildMesh, so nothing already saved breaks.
+// Interior connecting doors: a partition wall (group "interior") that
+// physically divides two rooms is otherwise a solid slab — nothing lets a
+// person actually pass from one demarcated room into the next. An
+// "interior-door" part is matched to whichever partition wall it geometrically
+// sits against (same floor, close to the wall's face, within its run) and
+// gets a real CSG cutout + frame/threshold, exactly like an exterior door,
+// so rooms are genuinely connected rather than just visually separated.
 // ---------------------------------------------------------------------------
-function hipRoofGeometry(width, depth, riseHeight) {
-  const hw = width / 2, hd = depth / 2;
-  const A = [-hw, 0, -hd], B = [hw, 0, -hd], C = [hw, 0, hd], D = [-hw, 0, hd], P = [0, riseHeight, 0];
-  const corners = [A, B, C, D];
-  const verts = [];
-  for (let i = 0; i < 4; i++) {
-    const from = corners[i], to = corners[(i + 1) % 4];
-    verts.push(...from, ...P, ...to);
-  }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-  geometry.computeVertexNormals();
-  return geometry;
+function isPartitionWall(p) {
+  const [w, h, d] = p.size || [0, 0, 0];
+  return h > 1.2 && Math.max(w, d) > 0.5 && Math.min(w, d) < 0.3;
 }
 
-function gableRoofGeometry(width, depth, riseHeight, ridgeAlongX) {
-  const hw = width / 2, hd = depth / 2;
-  const verts = [];
-  if (ridgeAlongX) {
-    const rL = [-hw, riseHeight, 0], rR = [hw, riseHeight, 0];
-    const eaveFL = [-hw, 0, -hd], eaveFR = [hw, 0, -hd];
-    const eaveBL = [-hw, 0, hd], eaveBR = [hw, 0, hd];
-    verts.push(...eaveFL, ...eaveFR, ...rR, ...eaveFL, ...rR, ...rL); // front slope
-    verts.push(...eaveBR, ...eaveBL, ...rL, ...eaveBR, ...rL, ...rR); // back slope
-    verts.push(...eaveFL, ...rL, ...eaveBL); // gable end x = -hw
-    verts.push(...eaveBR, ...rR, ...eaveFR); // gable end x = +hw
-  } else {
-    const rF = [0, riseHeight, -hd], rB = [0, riseHeight, hd];
-    const eaveFL = [-hw, 0, -hd], eaveFR = [hw, 0, -hd];
-    const eaveBL = [-hw, 0, hd], eaveBR = [hw, 0, hd];
-    verts.push(...eaveFL, ...eaveBL, ...rB, ...eaveFL, ...rB, ...rF); // left slope
-    verts.push(...eaveBR, ...eaveFR, ...rF, ...eaveBR, ...rF, ...rB); // right slope
-    verts.push(...eaveFR, ...rF, ...eaveFL); // gable end z = -hd
-    verts.push(...eaveBL, ...rB, ...eaveBR); // gable end z = +hd
-  }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-  geometry.computeVertexNormals();
-  return geometry;
+function doorMatchesWall(doorPart, wallPart) {
+  if ((doorPart.floor ?? 1) !== (wallPart.floor ?? 1)) return false;
+  const [ww, , wd] = wallPart.size || [0.1, 3, 0.1];
+  const [wx, , wz] = wallPart.position || [0, 0, 0];
+  const [dx, , dz] = doorPart.position || [0, 0, 0];
+  const thinIsX = ww < wd;
+  return thinIsX
+    ? Math.abs(dx - wx) < ww / 2 + 0.35 && Math.abs(dz - wz) <= wd / 2 + 0.05
+    : Math.abs(dz - wz) < wd / 2 + 0.35 && Math.abs(dx - wx) <= ww / 2 + 0.05;
 }
 
-export function buildRoofMesh(roofPart, footprint) {
-  const style = roofPart.roofStyle || 'hip';
-  const { width, depth, centerX, centerZ, topY } = footprint;
-  const overhang = roofPart.overhang ?? Math.max(0.3, Math.min(width, depth) * 0.06);
-  const spanW = width + overhang * 2;
-  const spanD = depth + overhang * 2;
-  const pitch = Math.min(Math.max(roofPart.pitch ?? 0.4, 0.15), 0.9);
-  const material = makeMaterial(roofPart.material || 'metal', roofPart.color || '#5a4a3a');
-  // DoubleSide is cheap insurance: hand-derived triangle winding on the
-  // gable/hip geometry below is very likely correct, but if a face ever
-  // ends up backwards it stays visible (just slightly different shading)
-  // instead of disappearing entirely.
-  material.side = THREE.DoubleSide;
-
-  let mesh;
-  if (style === 'flat') {
-    const slabH = Math.max(Math.min(width, depth) * 0.04, 0.15);
-    mesh = new THREE.Mesh(new THREE.BoxGeometry(spanW, slabH, spanD), material);
-    mesh.position.set(centerX, topY + slabH / 2, centerZ);
-  } else if (style === 'shed') {
-    const rise = Math.min(spanW, spanD) * pitch * 0.6;
-    const slopeLen = Math.sqrt(spanD * spanD + rise * rise);
-    mesh = new THREE.Mesh(new THREE.BoxGeometry(spanW, Math.max(spanW, spanD) * 0.015 + 0.08, slopeLen), material);
-    mesh.rotation.x = -Math.atan2(rise, spanD);
-    mesh.position.set(centerX, topY + rise / 2, centerZ);
-  } else if (style === 'gable') {
-    const rise = Math.min(spanW, spanD) * pitch;
-    const ridgeAlongX = width >= depth;
-    mesh = new THREE.Mesh(gableRoofGeometry(spanW, spanD, rise, ridgeAlongX), material);
-    mesh.position.set(centerX, topY, centerZ);
-  } else {
-    const rise = Math.min(spanW, spanD) * pitch;
-    mesh = new THREE.Mesh(hipRoofGeometry(spanW, spanD, rise), material);
-    mesh.position.set(centerX, topY, centerZ);
-  }
-
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  mesh.userData.group = 'roof';
-  mesh.userData.room = null;
-  mesh.userData.material = roofPart.material || 'metal';
-  mesh.userData.originalPosition = mesh.position.clone();
-  return mesh;
+// Cuts every interior door matched to this wall out of it. `buildWallWithOpenings`
+// assumes its wall's thickness runs along local Z (rotation 0); a partition
+// wall authored thin-along-X instead is passed through with an effective 90°
+// rotation and a reordered size so the same CSG/frame code applies unchanged.
+function buildInteriorWallWithDoors(wallPart, doorParts) {
+  const [ww, wh, wd] = wallPart.size || [0.1, 3, 4];
+  const thinIsX = ww < wd;
+  const canonicalWall = thinIsX
+    ? { ...wallPart, size: [wd, wh, ww], rotation: Math.PI / 2 }
+    : { ...wallPart, size: [ww, wh, wd], rotation: 0 };
+  const { wallMesh, fillMeshes } = buildWallWithOpenings(canonicalWall, doorParts.map(d => ({ ...d, group: 'door' })));
+  wallMesh.userData.room = wallPart.room || null;
+  return { wallMesh, fillMeshes };
 }
 
 // Builds one building's full mesh list (walls w/ real cutouts, floors,
-// roof, furniture) from its modelSpec.parts — shared by the single-building
+// roof, balconies) from its modelSpec.parts — shared by the single-building
 // editor and the multi-building estate viewer so both produce identical
 // geometry quality.
 export function buildBuildingMeshes(parts) {
   const openingParts = parts.filter(p => p.group === 'door' || p.group === 'window');
   const structureParts = parts.filter(p => p.group === 'structure' || !p.group);
-  const roofParts = parts.filter(p => p.group === 'roof');
-  const otherParts = parts.filter(p => p.group && p.group !== 'structure' && p.group !== 'door' && p.group !== 'window' && p.group !== 'roof');
+  const interiorDoorParts = parts.filter(p => p.group === 'interior-door');
+  const otherPartsAll = parts.filter(p => p.group && p.group !== 'structure' && p.group !== 'door' && p.group !== 'window' && p.group !== 'interior-door');
+  const roofParts = otherPartsAll.filter(p => p.group === 'roof');
+  const otherParts = otherPartsAll.filter(p => p.group !== 'roof');
+  const partitionWalls = otherParts.filter(p => p.group === 'interior' && isPartitionWall(p));
+  const nonPartitionOther = otherParts.filter(p => !(p.group === 'interior' && isPartitionWall(p)));
 
   const meshes = [];
   const floorNumbers = [...new Set(structureParts.map(p => p.floor ?? 1))].sort((a, b) => a - b);
   const isBuilding = openingParts.length > 0 && structureParts.length > 0;
 
   if (isBuilding) {
-    floorNumbers.forEach(floorNum => {
+    floorNumbers.forEach((floorNum, idx) => {
       const floorStructure = structureParts.filter(p => (p.floor ?? 1) === floorNum);
       const floorOpenings = openingParts.filter(p => (p.floor ?? 1) === floorNum);
       const [envelope, ...extraStructure] = floorStructure;
@@ -470,6 +576,26 @@ export function buildBuildingMeshes(parts) {
         m.userData.floor = floorNum;
         meshes.push(m);
       });
+
+      // Decorative string-course band at every floor line above the
+      // ground floor, and a plinth at the very base — small, cheap details
+      // that keep a multi-story stack from reading as identical boxes
+      // glued together, and give every extra floor a clear visual seam.
+      const [ew, eh, ed] = envelope.size || [4, 3, 4];
+      const [ecx, ecy, ecz] = envelope.position || [0, eh / 2, 0];
+      const baseY = ecy - eh / 2;
+      const overhang = Math.min(0.07, Math.min(ew, ed) * 0.012) + 0.025;
+      if (idx > 0) {
+        meshes.push(makeTrimMesh({
+          geometry: new THREE.BoxGeometry(ew + overhang * 2, 0.11, ed + overhang * 2),
+          x: ecx, y: baseY + 0.05, z: ecz, material: 'metal', color: '#d8d2c1', group: 'structure', castShadow: true,
+        }));
+      } else {
+        meshes.push(makeTrimMesh({
+          geometry: new THREE.BoxGeometry(ew + overhang * 2, 0.22, ed + overhang * 2),
+          x: ecx, y: baseY - 0.06, z: ecz, material: 'metal', color: '#4b4e53', group: 'structure', castShadow: true,
+        }));
+      }
     });
   } else {
     structureParts.forEach(p => {
@@ -478,32 +604,66 @@ export function buildBuildingMeshes(parts) {
       meshes.push(m);
     });
   }
-
-  const topFloor = floorNumbers[floorNumbers.length - 1] ?? 1;
-  roofParts.forEach(p => {
-    if (p.roofStyle) {
-      const floorNum = p.floor ?? topFloor;
-      const envelope = structureParts.find(sp => (sp.floor ?? 1) === floorNum) || structureParts[structureParts.length - 1];
-      if (envelope && envelope.size) {
-        const [w, h, d] = envelope.size;
-        const [ex, ey, ez] = envelope.position || [0, h / 2, 0];
-        const footprint = { width: w, depth: d, centerX: ex, centerZ: ez, topY: ey + h / 2 };
-        const m = buildRoofMesh(p, footprint);
-        m.userData.floor = floorNum;
-        meshes.push(m);
-        return;
-      }
+  // Partition walls: any matched interior-door gets a real cutout + frame;
+  // walls with no matching door stay solid. Balconies get their railing
+  // built out; everything else (floor slabs, freestanding primitives) is
+  // a plain mesh — same as before, just no longer double-building
+  // partition walls that now go through the door-matching path above.
+  const usedDoorIds = new Set();
+  partitionWalls.forEach(wall => {
+    const myDoors = interiorDoorParts.filter((d, i) => !usedDoorIds.has(i) && doorMatchesWall(d, wall));
+    if (myDoors.length) {
+      interiorDoorParts.forEach((d, i) => { if (myDoors.includes(d)) usedDoorIds.add(i); });
+      const { wallMesh, fillMeshes } = buildInteriorWallWithDoors(wall, myDoors);
+      wallMesh.userData.floor = wall.floor ?? 1;
+      fillMeshes.forEach(m => { m.userData.floor = wall.floor ?? 1; });
+      meshes.push(wallMesh, ...fillMeshes);
+    } else {
+      const m = buildMesh(wall);
+      m.userData.floor = wall.floor ?? 1;
+      m.userData.room = wall.room || null;
+      meshes.push(m);
     }
-    const m = buildMesh(p);
-    m.userData.floor = p.floor ?? topFloor;
-    meshes.push(m);
   });
-
-  otherParts.forEach(p => {
+  nonPartitionOther.forEach(p => {
+    if (p.group === 'balcony') {
+      const bMeshes = buildBalconyMeshes(p);
+      bMeshes.forEach(m => { m.userData.floor = p.floor ?? 1; });
+      meshes.push(...bMeshes);
+      return;
+    }
     const m = buildMesh(p);
     m.userData.floor = p.floor ?? 1;
     m.userData.room = p.room || null;
     meshes.push(m);
+  });
+
+  // Roofs: a "cylinder" part with a near-zero radiusTop is the encoded
+  // convention for "hip roof" used throughout the AI prompt and the offline
+  // templates — swap that cone approximation for a real hip roof matched to
+  // its floor's actual footprint. A box roof, or a genuine cylinder (equal
+  // top/bottom radius, e.g. a turret), is left as an ordinary mesh.
+  roofParts.forEach(p => {
+    const isConeConvention = p.type === 'cylinder' && (p.radiusTop ?? 0) < Math.max(0.05, (p.radiusBottom ?? 1) * 0.05);
+    if (!isConeConvention) {
+      const m = buildMesh(p);
+      m.userData.floor = p.floor ?? 1;
+      meshes.push(m);
+      return;
+    }
+    const roofFloor = p.floor ?? floorNumbers[floorNumbers.length - 1] ?? 1;
+    const envelope = structureParts.find(sp => (sp.floor ?? 1) === roofFloor) || structureParts[structureParts.length - 1];
+    const [ew, eh, ed] = envelope?.size || [(p.radiusBottom || 4) * 1.4, 3, (p.radiusBottom || 4) * 1.4];
+    const [ecx, ecy, ecz] = envelope?.position || [0, eh / 2, 0];
+    const baseY = ecy + eh / 2;
+    const overhang = Math.min(0.5, Math.max(0.3, Math.min(ew, ed) * 0.05));
+    const ridgeHeight = Math.max(0.6, p.height || 1.6);
+    const [px, , pz] = p.position || [ecx, 0, ecz];
+    meshes.push(buildHipRoofMesh({
+      width: ew, depth: ed, ridgeHeight, overhang,
+      position: [px, baseY, pz],
+      material: p.material || 'metal', color: p.color, floor: roofFloor,
+    }));
   });
 
   return meshes;

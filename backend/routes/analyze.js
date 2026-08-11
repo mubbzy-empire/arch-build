@@ -53,8 +53,8 @@ router.post('/', upload.single('image'), async (req, res) => {
     const relativeImagePath = `/uploads/${path.basename(req.file.path)}`;
 
     db.prepare(`
-      INSERT INTO projects (id, title, source_type, image_path, prompt, category, summary, dimensions_json, materials_json, equipment_json, model_spec_json, render_image_path)
-      VALUES (@id, @title, 'blueprint', @image_path, @prompt, @category, @summary, @dimensions_json, @materials_json, @equipment_json, @model_spec_json, @render_image_path)
+      INSERT INTO projects (id, title, source_type, image_path, prompt, category, summary, dimensions_json, materials_json, equipment_json, model_spec_json, render_image_path, detected_json)
+      VALUES (@id, @title, 'blueprint', @image_path, @prompt, @category, @summary, @dimensions_json, @materials_json, @equipment_json, @model_spec_json, @render_image_path, @detected_json)
     `).run({
       id,
       title: result.title || 'Untitled Design',
@@ -67,6 +67,7 @@ router.post('/', upload.single('image'), async (req, res) => {
       equipment_json: JSON.stringify(result.equipment || []),
       model_spec_json: JSON.stringify(result.modelSpec || { parts: [] }),
       render_image_path: renderImagePath,
+      detected_json: JSON.stringify(result.detected || null),
     });
 
     res.json({
@@ -82,6 +83,7 @@ router.post('/', upload.single('image'), async (req, res) => {
       equipment: result.equipment,
       steps: result.steps || [],
       modelSpec: result.modelSpec,
+      detected: result.detected || null,
     });
   } catch (err) {
     console.error(err);
@@ -104,6 +106,7 @@ router.get('/projects/:id', (req, res) => {
     equipment: JSON.parse(row.equipment_json || '[]'),
     modelSpec: JSON.parse(row.model_spec_json || '{"parts":[]}'),
     renderImagePath: row.render_image_path || null,
+    detected: row.detected_json ? JSON.parse(row.detected_json) : null,
   });
 });
 

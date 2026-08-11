@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import ModelViewer from '../components/ModelViewer';
-import { DimensionsCard, EquipmentCard, MaterialsCard, StepsCard } from '../components/ResultDetails';
+import { DimensionsCard, EquipmentCard, MaterialsCard, StepsCard, DetectedElementsCard } from '../components/ResultDetails';
 import BudgetEstimator from '../components/BudgetEstimator';
 import Disclaimer from '../components/Disclaimer';
 import { getProject, listProjectVersions, saveProjectVersion, restoreProjectVersion } from '../api/client';
@@ -24,7 +24,8 @@ export default function Results() {
         .then(p => setResult({
           id: p.id, title: p.title, category: p.category, summary: p.summary,
           dimensions: p.dimensions, materials: p.materials, equipment: p.equipment,
-          modelSpec: p.modelSpec, imagePath: p.image_path, renderImagePath: p.renderImagePath, engine: 'saved',
+          modelSpec: p.modelSpec, imagePath: p.image_path, renderImagePath: p.renderImagePath,
+          detected: p.detected, engine: 'saved',
         }))
         .catch(e => setError(e.message))
         .finally(() => setLoading(false));
@@ -57,7 +58,8 @@ export default function Results() {
       setResult({
         id: p.id, title: p.title, category: p.category, summary: p.summary,
         dimensions: p.dimensions, materials: p.materials, equipment: p.equipment,
-        modelSpec: p.modelSpec, imagePath: p.image_path, renderImagePath: p.renderImagePath, engine: 'saved',
+        modelSpec: p.modelSpec, imagePath: p.image_path, renderImagePath: p.renderImagePath,
+        detected: p.detected, engine: 'saved',
       });
     } catch (err) {
       setError(err.message);
@@ -116,6 +118,18 @@ export default function Results() {
         <div className="split-main">
           <ModelViewer modelSpec={result.modelSpec} />
 
+          {result.imagePath && (
+            <div className="panel bracket" style={{ padding: 0, overflow: 'hidden' }}>
+              <div style={{ padding: '12px 14px 0' }}>
+                <span className="eyebrow">Your uploaded blueprint</span>
+              </div>
+              <img src={result.imagePath} alt="Uploaded blueprint" style={{ display: 'block', width: '100%', marginTop: 10 }} />
+              <p className="page-sub" style={{ padding: '10px 14px 14px', fontSize: 12.5 }}>
+                Compare this against the "What the AI read" panel to check the reading against your actual drawing.
+              </p>
+            </div>
+          )}
+
           {result.renderImagePath && (
             <div className="panel bracket" style={{ padding: 0, overflow: 'hidden' }}>
               <div style={{ padding: '12px 14px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -133,6 +147,7 @@ export default function Results() {
         </div>
 
         <div className="split-side">
+          <DetectedElementsCard detected={result.detected} />
           <DimensionsCard dimensions={result.dimensions} />
           <MaterialsCard materials={result.materials} />
           <EquipmentCard equipment={result.equipment} />

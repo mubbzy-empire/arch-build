@@ -2,20 +2,25 @@
 
 Upload a blueprint (or describe a design in chat) and get:
 
-- An **editable, interactive 3D model** — click any wall, roof section, door, window, or
-  furniture piece and drag it with an on-screen gizmo (like Blender) to reposition it or
-  pull it away to reveal the interior
+- An **editable, interactive 3D model** — click any wall, roof section, door, or window
+  and drag it with an on-screen gizmo (like Blender) to move it, or switch the gizmo to
+  **Rotate** to spin it in place. The interior is hidden behind the roof by default and
+  only opens up when you press the **"Show interior"** button — the model itself only
+  loads once you press **"View 3D model"**, instead of building automatically
 - Real **cut-through doors and windows** (actual holes in the walls, not decals) using
-  boolean geometry
+  boolean geometry — including **interior doors that connect one demarcated room to the
+  next**, cut into the partition wall between them, not just decorative dividers
 - Click any part or room for a quick **info panel** (element type, room, floor, material)
 - **Dimensions, materials, equipment, and a build sequence**
 - A **budget & cost estimate** — enter a number and get a rough materials/labor/timeline
   range, with the AI attempting a live web-informed estimate when possible
-- A **chat design mode** that furnishes and colors interiors automatically
+- A **chat design mode** that drafts and colors the architecture automatically (no furniture — this is an architectural modeler, not an interior designer)
 - A **photorealistic AI concept render** alongside the interactive model
 - **Multi-building estates/compounds** — describe a whole development and get several
   independently-editable buildings placed on a site with a procedural (non-AI, guaranteed
-  non-overlapping) road/plot layout, browsable in a Scene Explorer
+  non-overlapping) road/plot layout, browsable in a Scene Explorer. The site layout
+  itself is editable too — drag a building to a new plot or rotate it in place with the
+  same gizmo, or drill into one building for full part-level editing
 - A **manual 3D modeler** — draw real walls point-to-point, cut real door/window openings
   into them, and place freestanding primitives from a completely empty scene, no AI
   involved, with select/move, undo/redo, and save
@@ -52,7 +57,7 @@ npm run install:all
 ## 3. (Recommended) Connect a free AI key
 
 Without a key, the app works immediately via a built-in offline engine (rule-based
-templates for common building/furniture types). For real blueprint reading, furnished
+templates for common building types). For real blueprint reading, room-partitioned
 chat design, photorealistic renders, and cost estimates, connect a free Gemini key:
 
 1. https://aistudio.google.com/apikey → sign in → **Create API key** (free, no card).
@@ -80,13 +85,13 @@ together. Open **http://localhost:5173** in your browser. `Ctrl+C` to stop.
 
 - **Orbit:** drag anywhere on the model to rotate, scroll/pinch to zoom.
 - **Edit parts:** tap "Edit parts" in the viewer, then click any wall/roof/door/window/
-  furniture piece. A 3-axis drag gizmo appears — drag an arrow to move that part along
-  that axis. Pull a wall or the roof away to see inside.
+  part. A 3-axis drag gizmo appears — **Move** drags that part along an axis, **Rotate**
+  spins it in place around the same gizmo. Pull a wall or the roof away to see inside.
 - **Part info:** tap any part any time (even outside edit mode) to see its element type,
   room, floor, and material in a small overlay panel.
-- **Reset positions:** undoes all manual moves back to the AI's original layout.
+- **Reset positions:** undoes all manual moves/rotations back to the AI's original layout.
 - **Interior view:** one-tap roof removal without manual dragging.
-- **Color swatches:** below the viewer, recolor walls/roof/door/windows/furniture live.
+- **Color swatches:** below the viewer, recolor walls/roof/door/windows live.
 - **Version history:** save a labeled checkpoint any time from the Results page, and
   restore an earlier one later — works for single buildings and whole estates.
 
@@ -102,7 +107,12 @@ through the same real-geometry pipeline as a single design; the site layout (gri
 positions, road spacing, non-overlap) is placed **procedurally, not by the AI**, so it's
 geometrically guaranteed correct regardless of what the AI does with each building's
 shape. Use the Scene Explorer to select/hide/focus individual buildings, and tap a
-building to open its own editable 3D view below.
+building to open its own editable 3D view below (full part-level editing, same as a
+single-building project). To rearrange the site itself, tap **"Edit layout"** in the
+estate viewer, then click any building and drag it to a new plot (**Move**) or spin it
+(**Rotate**) — constrained to the ground plane so a building can't be lifted into the
+air or tipped over. **"Reset layout"** undoes every manual move back to the generated
+plot positions.
 
 ---
 
@@ -143,7 +153,7 @@ archview/
 │   ├── routes/
 │   │   ├── analyze.js         Blueprint upload + analysis, project history,
 │   │   │                      version history, manual-design save
-│   │   ├── chat.js            Chat design (furnished)
+│   │   ├── chat.js            Chat design (architecture only, no furniture)
 │   │   ├── estimate.js        Budget/cost estimate
 │   │   └── estate.js          Multi-building estate generation + retrieval
 │   ├── services/aiService.js  Gemini integration + offline fallback engine +
@@ -183,12 +193,15 @@ archview/
 - **The 3D model is built from primitives** (boxes/cylinders) assembled by the AI or by
   hand, not a full architectural CAD engine — it's an accurate-to-scale concept model you
   can edit, not a construction-ready structural document.
-- **Estate site layout is procedural, not engineered.** Building placement/road spacing
-  is guaranteed non-overlapping by the grid math, but drainage, utilities, grading, and
-  actual civil/site engineering are not modeled — that still needs a licensed engineer.
-- **Manual-modeler wall drag has one known gap:** moving a wall translates its attached
-  doors/windows with it, but rotating a wall (not currently exposed as a gizmo mode) is
-  not supported — delete/re-place openings if you need to rotate a wall significantly.
+- **Estate site layout is procedural, not engineered, but is manually adjustable.**
+  Generated placement/road spacing is guaranteed non-overlapping by the grid math;
+  dragging a building in "Edit layout" mode does not re-check for overlaps against
+  its new spot, so keep an eye on it visually. Drainage, utilities, grading, and actual
+  civil/site engineering are not modeled — that still needs a licensed engineer.
+- **Manual-modeler wall rotate has one known gap:** rotating a freestanding box/cylinder
+  with the gizmo works cleanly, but rotating a wall does not carry its attached
+  doors/windows around with it (only a translate move does) — delete/re-place openings
+  if you need to rotate a wall significantly.
 - **Free-tier Gemini models get renamed/retired periodically** — if AI features stop
   working, check `backend/services/aiService.js` for the model name comments and
   https://ai.google.dev/gemini-api/docs/models for the current equivalent.
