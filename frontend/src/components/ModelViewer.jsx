@@ -144,7 +144,10 @@ export default function ModelViewer({ modelSpec, title }) {
       // give the building a real yard inside it (not the whole grass field
       // the ground plane covers) — the same walled-compound treatment the
       // estate scene uses, now applied to every single-building model too.
-      const compoundSpan = Math.max(radius * 4.4, 9);
+      // Kept close to the building (not the old radius*4.4) specifically so
+      // it sits inside the camera's default framing below instead of
+      // requiring the person to zoom/pan out to ever see it.
+      const compoundSpan = Math.max(maxDim * 1.45, 9);
       const compound = buildCompoundWall(compoundSpan, compoundSpan, { gateWidth: Math.min(4, compoundSpan * 0.4) });
       compound.position.set(center.x, box.min.y, center.z);
       scene.add(compound);
@@ -153,16 +156,53 @@ export default function ModelViewer({ modelSpec, title }) {
       // "Show interior" is toggled so rooms read clearly instead of relying
       // on the sun alone (which can leave far walls dark once the roof is
       // gone). Toggled in the hideRoof effect below.
-      const interiorFill = new THREE.PointLight(0xfff1d6, 0, Math.max(radius * 6, 10));
-      interiorFill.position.set(center.x, center.y + Math.max(radius * 1.4, 2), center.z);
-      scene.add(interiorFill);
-      interiorFillRef.current = interiorFill;
+      // Physically-correct lighting (the default since three.js r155+) means
+      // point-light intensity is in candela, where small values like the
+      // old "1.2" this used to be are effectively invisible. Decay=1
+      // (linear falloff) plus a much higher on-intensity actually lights a
+      // room-scale interior.
+      //
+      // One light in the exact center of the whole building only lit the
+      // middle room well and left rooms near the outer walls dark on
+      // anything bigger than a single box — so place one light per
+      // distinct room (from each mesh's userData.room, centroid of that
+      // room's own parts) instead, falling back to the old single
+      // building-center light when no part carries room info at all.
+      const roomAccum = new Map(); // key -> { x, y, z, n, floor }
+      meshes.forEach(m => {
+        const room = m.userData.room;
+        if (!room) return;
+        const key = `${room}__${m.userData.floor ?? 1}`;
+        const p = m.position;
+        const acc = roomAccum.get(key) || { x: 0, y: 0, z: 0, n: 0, floor: m.userData.floor ?? 1 };
+        acc.x += p.x; acc.y += p.y; acc.z += p.z; acc.n += 1;
+        roomAccum.set(key, acc);
+      });
+      const interiorFills = [];
+      if (roomAccum.size > 0) {
+        // Cap the light count on very room-dense scenes to stay cheap.
+        [...roomAccum.values()].slice(0, 24).forEach(acc => {
+          const light = new THREE.PointLight(0xfff1d6, 0, Math.max(radius * 2.5, 5), 1);
+          light.position.set(acc.x / acc.n, acc.y / acc.n + Math.max(radius * 0.35, 1.1), acc.z / acc.n);
+          scene.add(light);
+          interiorFills.push(light);
+        });
+      } else {
+        const light = new THREE.PointLight(0xfff1d6, 0, Math.max(radius * 6, 10), 1);
+        light.position.set(center.x, center.y + Math.max(radius * 1.4, 2), center.z);
+        scene.add(light);
+        interiorFills.push(light);
+      }
+      interiorFillRef.current = interiorFills;
 
       camera.near = Math.max(radius / 500, 0.01);
       camera.far = radius * 60 + 100;
       camera.updateProjectionMatrix();
 
-      const dist = radius * 2.6;
+      // Framed wide enough to include the compound wall by default (not
+      // just the bare building), so the wall/gate are visible on first
+      // load instead of only after zooming out.
+      const dist = Math.max(radius * 2.6, compoundSpan * 0.95);
       camera.position.set(center.x + dist * 0.65, center.y + dist * 0.5, center.z + dist * 0.7);
       controls.target.copy(center);
       controls.minDistance = radius * 0.25;
@@ -288,7 +328,10 @@ export default function ModelViewer({ modelSpec, title }) {
 
   useEffect(() => {
     meshesRef.current.forEach(m => { if (m.userData.group === 'roof') m.visible = !hideRoof; });
-    if (interiorFillRef.current) interiorFillRef.current.intensity = hideRoof ? 1.2 : 0;
+    // Was "1.2", which is essentially invisible under physically-correct
+    // (candela) point-light units — that's the direct cause of the very
+    // dark/black interior floor in the "Show interior" screenshots.
+    if (interiorFillRef.current) interiorFillRef.current.forEach(l => { l.intensity = hideRoof ? 55 : 0; });
   }, [hideRoof, modelSpec]);
 
   useEffect(() => {

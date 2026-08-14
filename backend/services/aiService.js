@@ -51,7 +51,7 @@ Every part needs a "group" tag:
 - "door": becomes a REAL cut-through opening with a door panel filling it, and the viewer automatically adds a frame, threshold, and handle. ~0.8-1.0m wide, ~2.0-2.1m tall, base at y=0 relative to its floor. At least one exterior door on the ground floor. On upper floors, a wider (~1.5-1.8m) glazed door (material "glass") leading onto a balcony reads well for a duplex/multi-story design. If the brief mentions a GARAGE, add a "door" opening ~2.4-3.0m wide × ~2.1m tall on the ground floor where the garage should be — the viewer automatically detects any door that wide and dresses it as a sectional garage door (panel lines, no handle) instead of a house door, so you don't need a separate part type for it; still give the garage its own room-tagged "interior" bay (room: "Garage") the way any other room would be enclosed. Tag with the matching "floor" number.
 - "pool": ONLY when the brief mentions a swimming pool. "size": [width, waterDepth, length] where waterDepth is how far the basin sinks below ground (~1.2-1.5m typical), "position" is the deck-rim center at ground level (y≈0), placed a few meters clear of the building footprint so it doesn't overlap the walls. The viewer automatically builds the coping/deck, tiled basin, and water surface — you only provide this one part. Do not add a pool unless one was actually requested.
 - "balcony": a projecting platform with a railing (the viewer builds the railing/balusters automatically — you only provide the slab). Use "size": [width, 0.1, depth] where width runs along the wall and depth is how far it projects outward, "position" is the slab's floor level centered on the wall it projects from, and "rotation" (radians, optional, default 0 = projects toward +Z) should match whichever exterior wall it's attached to. Any 2+ story house or duplex should have at least one balcony on an upper floor — this is one of the most distinctive features of a good multi-story design, don't skip it.
-- "interior": a floor slab per story, PLUS mandatory partition walls that physically divide the floor into distinct enclosed rooms — this is the single most important part of a good response, do not skip or minimize it. First mentally list the rooms this floor needs (a home needs, at minimum: one living/parlor room, one kitchen, one bathroom/toilet, and one bedroom per bedroom described — plus a dining area, garage, or terrace if mentioned), then output real partition wall boxes that physically separate every one of those rooms from its neighbors (walls on at least 2-3 sides per room, not a single line down the middle). A floor with fewer than (room count − 1) × 2 partition wall parts is not acceptable. Tag each with the "room" it belongs to (e.g. "Parlor", "Kitchen", "Toilet", "Bedroom 1", "Garage") and the correct "floor". Do NOT populate rooms with furniture or decor — this application models architecture only (walls, openings, floors, roof); leave every room as clean, empty, correctly-proportioned floor space. Do not use a "furniture" group at all.
+- "interior": a floor slab per story, PLUS mandatory partition walls that physically divide the floor into distinct enclosed rooms — this is the single most important part of a good response, do not skip or minimize it. Plan it like a real floor plan, not a grid: cluster the living/parlor and kitchen near the entry door (sized unevenly — living space larger, kitchen smaller — not equal boxes), then run a hallway/corridor back from there with the bedrooms and bathroom/toilet opening directly off that hallway, each in its own room, the bathroom noticeably smaller than the bedrooms. Do NOT produce a small number of straight walls that run the full width or full depth of the building and slice it into a uniform column/row grid of equal cells — that is not how real houses are partitioned and is a failing response even if every resulting cell is enclosed. Real houses also rarely connect rooms in a single chain (room A only reachable through room B only reachable through room C) — a shared hallway that most rooms open onto directly is the realistic pattern. First mentally list the rooms this floor needs (a home needs, at minimum: one living/parlor room, one kitchen, one bathroom/toilet, and one bedroom per bedroom described — plus a dining area, garage, or terrace if mentioned), then output real partition wall boxes that physically separate every one of those rooms from its neighbors (walls on at least 2-3 sides per room, not a single line down the middle). A floor with fewer than (room count − 1) × 2 partition wall parts is not acceptable. Tag each with the "room" it belongs to (e.g. "Parlor", "Kitchen", "Hallway", "Toilet", "Bedroom 1", "Garage") and the correct "floor". Do NOT populate rooms with furniture or decor — this application models architecture only (walls, openings, floors, roof); leave every room as clean, empty, correctly-proportioned floor space. Do not use a "furniture" group at all.
 - "interior-door": a REAL cut-through doorway (with frame, threshold, and handle added automatically, same as an exterior door) inside a partition wall, so a person can actually walk from one demarcated room into the next — a floor plan where every room is sealed off with no way to reach it is a failing response. For every partition wall you add, place at least one "interior-door" roughly 0.8-0.9m wide and ~2.0m tall wherever that wall's two adjoining rooms should connect (or connect to a hallway/entry); a small home needs several of these, not just one. Position and size it exactly like an exterior "door" — the engine automatically finds and cuts it into whichever partition wall it's touching, so you don't need to reference the wall directly, just place it in the doorway location. Tag with the correct "floor".
 The optional "color" field is a specific hex color (e.g. "#3a5f7d") you choose because it suits the design — used instead of the generic material default. Vary it thoughtfully across parts for a designed, non-monotone look — for a multi-story building, giving the upper floor(s) a slightly different tone than the ground floor (a common real-world cue) reads much better than one flat color top to bottom. Unless the brief asks for something else, favor a confident two-tone exterior scheme like real finished elevations use: a light-to-mid body color (e.g. sky blue "#8fc4e0", soft green, warm cream) on the main "structure" envelope, with door/entry-adjacent wall sections in a noticeably deeper shade of the same family (e.g. "#3f6fa0" alongside "#8fc4e0") rather than every wall face sharing one flat color. The viewer automatically adds dark banded corner pilasters, a roof fascia, a base plinth, and (in the site view) a perimeter compound wall with a gate to every building, so do NOT add your own corner posts, boundary walls, or fences as parts — focus color and massing choices on the building itself. Never use gradients — one flat, considered color per part.
 Never represent the object as a single primitive. Break every object into the distinct parts a builder would actually assemble. Buildings must include one "structure" envelope per floor, a "roof" group, several "window" openings, at least one "door" opening, genuinely room-planned "interior" parts with connecting "interior-door" openings as described above, and (for anything 2+ stories) at least one "balcony" — never a single flat-topped box, and never a single undivided open interior for anything larger than a one-room structure. A response that just adds one or two stray divider walls without enclosing real, separate, named, DOOR-CONNECTED rooms is a failing response — plan the full room layout, including how each room is entered, before writing the parts list.
@@ -63,11 +63,13 @@ Keep "parts" between 3 and 65 primitives (multi-room, multi-story buildings need
 // Deterministic safety net: if the model still returns a sparse, barely
 // partitioned interior despite the instructions above (smaller/faster free
 // models sometimes under-deliver on complex structured output), fill in a
-// simple room grid so the viewer always shows real room demarcation rather
-// than one open box. This app models architecture only — clean, empty,
-// correctly-proportioned rooms — never furniture/decor. Only runs for live
-// Gemini output (never touches the hand-authored offline templates), and
-// only adds to floors the AI left essentially unplanned.
+// real front-zone/hallway/bedroom-bay floor plan (see buildRealisticFloorPlan
+// below) so the viewer always shows a house-shaped room layout rather than
+// one open box — or a uniform grid of equal cells, which doesn't look like
+// a real floor plan either. This app models architecture only — clean,
+// empty, correctly-proportioned rooms — never furniture/decor. Only runs
+// for live Gemini output (never touches the hand-authored offline
+// templates), and only adds to floors the AI left essentially unplanned.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Every door/window opening is authored by the model as a small box "cut"
@@ -204,6 +206,135 @@ function ensureMinimumOpenings(spec) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// A real house isn't a grid: living spaces cluster near the entry, bedrooms
+// share a hallway instead of opening directly into each other, and the
+// bath is a small room tucked at the end of that hallway, not a slice the
+// same size as everything else. This builds that shape — front zone
+// (parlor + kitchen, split unevenly, entered from the door) / spine wall
+// with one hallway doorway / back zone (a corridor with bedrooms and one
+// bath opening off it) — instead of dividing the whole footprint into a
+// uniform column/row grid.
+//
+// Coordinates are worked out in a local (u, v) frame — u runs from the
+// entry door towards the back of the house, v runs across it — then mapped
+// back to world x/z at the end, so the same logic works whether the real
+// entry sits on an x-facing or z-facing wall.
+// ---------------------------------------------------------------------------
+function buildRealisticFloorPlan(spec, floorNum, envelope) {
+  const [w, h, d] = envelope.size;
+  const [cx, cy, cz] = envelope.position || [0, h / 2, 0];
+  const baseY = cy - h / 2;
+  const thickness = 0.08;
+  const wallH = Math.max(0.4, h - 0.2);
+  const wallY = baseY + wallH / 2;
+
+  const entryDoor = spec.parts.find(p => (p.floor ?? 1) === floorNum && p.group === 'door' && (p.size?.[0] ?? 1) < 2.2)
+    || spec.parts.find(p => (p.floor ?? 1) === floorNum && p.group === 'door');
+  const [dx0, , dz0] = entryDoor?.position || [cx, 0, cz - d / 2];
+  const distToXFaces = Math.min(Math.abs(dx0 - (cx - w / 2)), Math.abs(dx0 - (cx + w / 2)));
+  const distToZFaces = Math.min(Math.abs(dz0 - (cz - d / 2)), Math.abs(dz0 - (cz + d / 2)));
+  const frontAxis = distToZFaces <= distToXFaces ? 'z' : 'x';
+
+  const alongExtent = frontAxis === 'z' ? d : w;
+  const crossExtent = frontAxis === 'z' ? w : d;
+  const alongCenter = frontAxis === 'z' ? cz : cx;
+  const crossCenter = frontAxis === 'z' ? cx : cz;
+  const alongMin = alongCenter - alongExtent / 2;
+  const alongMax = alongCenter + alongExtent / 2;
+  const crossMin = crossCenter - crossExtent / 2;
+  const crossMax = crossCenter + crossExtent / 2;
+
+  const doorAlong = frontAxis === 'z' ? dz0 : dx0;
+  const frontAtMin = Math.abs(doorAlong - alongMin) <= Math.abs(doorAlong - alongMax);
+  const frontU = frontAtMin ? alongMin : alongMax;
+  const backU = frontAtMin ? alongMax : alongMin;
+  const dir = frontAtMin ? 1 : -1;
+
+  const mapUV = (u, v) => (frontAxis === 'z' ? [v, u] : [u, v]);
+  const mapSize = (alongLen, crossLen) => (frontAxis === 'z' ? [crossLen, alongLen] : [alongLen, crossLen]);
+
+  // kind 'U' = a wall at a fixed along-coordinate spanning across the cross
+  // axis (separates front from back, or one bay-room from the next).
+  // kind 'V' = a wall at a fixed cross-coordinate spanning along the along
+  // axis (separates parlor from kitchen, or a bay from the corridor).
+  const pushWall = (kind, fixedCoord, spanFrom, spanTo) => {
+    const spanLen = Math.max(0.3, Math.abs(spanTo - spanFrom));
+    const spanMid = (spanFrom + spanTo) / 2;
+    const size3 = kind === 'U' ? mapSize(thickness, spanLen) : mapSize(spanLen, thickness);
+    const [x, z] = kind === 'U' ? mapUV(fixedCoord, spanMid) : mapUV(spanMid, fixedCoord);
+    spec.parts.push({ type: 'box', size: [size3[0], wallH, size3[1]], position: [x, wallY, z], material: 'wood', color: '#eef0ea', group: 'interior', room: 'auto', floor: floorNum });
+  };
+  const pushDoor = (kind, fixedCoord, atCoord) => {
+    const size3 = kind === 'U' ? mapSize(thickness * 3, 0.85) : mapSize(0.85, thickness * 3);
+    const [x, z] = kind === 'U' ? mapUV(fixedCoord, atCoord) : mapUV(atCoord, fixedCoord);
+    spec.parts.push({ type: 'box', size: [size3[0], 2.0, size3[1]], position: [x, baseY + 1.0, z], material: 'wood', color: '#6b4a2f', group: 'interior-door', floor: floorNum });
+  };
+
+  const frontDepth = Math.max(2.2, Math.min(alongExtent * 0.4, alongExtent - 2.4, 4.6));
+  const uBoundary = frontU + dir * frontDepth;
+  const vSplit = crossMin + crossExtent * 0.62; // parlor gets the larger share
+
+  // Spine wall between the entry-facing living zone and the bedroom zone.
+  pushWall('U', uBoundary, crossMin, crossMax);
+
+  // Parlor | Kitchen — an open relationship near the entry, not two equal
+  // boxes: real small houses put these side by side with the living room
+  // noticeably larger.
+  pushWall('V', vSplit, frontU, uBoundary);
+  pushDoor('V', vSplit, frontU + dir * frontDepth * 0.3);
+
+  const area = w * d;
+  const bedroomCount = area > 70 ? 3 : area > 40 ? 2 : 1;
+  const backDepth = Math.abs(backU - uBoundary);
+
+  if (bedroomCount <= 1 || backDepth < 3.4 || crossExtent < 4.2) {
+    // Too small for a hallway to make sense — one bedroom and one bath
+    // split straight off the back of the living zone, each with their own
+    // door, the way a small cottage actually does it.
+    const bathShare = 0.34;
+    const vBath = crossMin + crossExtent * bathShare;
+    pushWall('V', vBath, uBoundary, backU);
+    pushDoor('U', uBoundary, crossMin + crossExtent * bathShare * 0.5);
+    pushDoor('U', uBoundary, crossMin + crossExtent * (bathShare + (1 - bathShare) * 0.5));
+    return;
+  }
+
+  // Hallway plan: bedrooms and the bath open off a shared corridor reached
+  // through the spine doorway, in bays either side — never chained directly
+  // room-to-room.
+  const corridorWidth = Math.max(1.0, Math.min(1.35, crossExtent * 0.16));
+  const vCorrLo = crossCenter - corridorWidth / 2;
+  const vCorrHi = crossCenter + corridorWidth / 2;
+  pushDoor('U', uBoundary, crossCenter);
+  pushWall('V', vCorrLo, uBoundary, backU);
+  pushWall('V', vCorrHi, uBoundary, backU);
+
+  const leftCount = Math.ceil(bedroomCount / 2);
+  const rightCount = bedroomCount - leftCount;
+  const bathBayIdx = rightCount > 0 ? 1 : 0; // bath goes wherever there's a spare slot
+  const bays = [
+    { vFrom: crossMin, vTo: vCorrLo, corridorV: vCorrLo, count: leftCount, hasBath: bathBayIdx === 0 },
+    { vFrom: vCorrHi, vTo: crossMax, corridorV: vCorrHi, count: rightCount, hasBath: bathBayIdx === 1 },
+  ];
+
+  bays.forEach(bay => {
+    const rooms = bay.count + (bay.hasBath ? 1 : 0);
+    if (rooms === 0) return;
+    const bathDepth = bay.hasBath ? Math.min(2.0, Math.max(1.4, backDepth * 0.24)) : 0;
+    const bedroomSpan = Math.max(0, backDepth - bathDepth);
+    const bedroomDepth = bay.count > 0 ? bedroomSpan / bay.count : 0;
+    const order = [...Array(bay.count).fill('bed'), ...(bay.hasBath ? ['bath'] : [])];
+    let uCursor = uBoundary;
+    order.forEach((kind, i) => {
+      const segDepth = kind === 'bath' ? bathDepth : bedroomDepth;
+      if (i > 0) pushWall('U', uCursor, bay.vFrom, bay.vTo);
+      pushDoor('V', bay.corridorV, uCursor + dir * segDepth * 0.5);
+      uCursor += dir * segDepth;
+    });
+  });
+}
+
 function reinforceDesign(result) {
   const spec = result?.modelSpec;
   if (!spec || !Array.isArray(spec.parts) || !spec.parts.length) return result;
@@ -239,35 +370,8 @@ function reinforceDesign(result) {
     );
     if (existingRooms.size >= 3) return; // AI already planned real rooms for this floor — leave it alone
 
-    const [w, h, d] = envelope.size;
-    const [cx, cy, cz] = envelope.position || [0, h / 2, 0];
-    const baseY = cy - h / 2;
-    const thickness = 0.08;
-    // Full floor-to-ceiling partitions (minus a hair of clearance at the
-    // slab and ceiling line) — the old 0.85x height left partitions visibly
-    // short of the ceiling, which is what made them read as "dividers"
-    // rather than real walls.
-    const wallH = Math.max(0.4, h - 0.2);
-    const wallY = baseY + wallH / 2;
-
-    const area = w * d;
-    const cols = area > 70 ? 3 : 2;
-    const rows = area > 45 ? 2 : 1;
-    const colW = w / cols;
-    const rowD = d / rows;
-
-    for (let c = 1; c < cols; c++) {
-      const x = cx - w / 2 + colW * c;
-      spec.parts.push({ type: 'box', size: [thickness, wallH, d], position: [x, wallY, cz], material: 'wood', color: '#eef0ea', group: 'interior', room: 'auto', floor: floorNum });
-      spec.parts.push({ type: 'box', size: [0.85, 2.0, thickness * 3], position: [x, baseY + 1.0, cz - d / 2 + d * 0.3], material: 'wood', color: '#6b4a2f', group: 'interior-door', floor: floorNum });
-      addedAny = true;
-    }
-    for (let r = 1; r < rows; r++) {
-      const z = cz - d / 2 + rowD * r;
-      spec.parts.push({ type: 'box', size: [w, wallH, thickness], position: [cx, wallY, z], material: 'wood', color: '#eef0ea', group: 'interior', room: 'auto', floor: floorNum });
-      spec.parts.push({ type: 'box', size: [0.85, 2.0, thickness * 3], position: [cx - w / 2 + w * 0.3, baseY + 1.0, z], material: 'wood', color: '#6b4a2f', group: 'interior-door', floor: floorNum });
-      addedAny = true;
-    }
+    buildRealisticFloorPlan(spec, floorNum, envelope);
+    addedAny = true;
   });
 
   if (addedAny) {
@@ -549,20 +653,22 @@ const TEMPLATES = {
       'Apply roofing shingles.',
       'Complete interior drywall and finish work.',
     ],
-    modelSpec: { parts: [
-      { type: 'box', size: [10, 3.2, 8], position: [0, 1.6, 0], material: 'wood', color: '#a9d3ea', group: 'structure' },
-      { type: 'cylinder', radiusTop: 0.001, radiusBottom: 7.2, height: 1.8, position: [0, 4.1, 0], material: 'metal', color: '#243447', group: 'roof' },
-      { type: 'box', size: [1.2, 1.2, 0.05], position: [-2.5, 1.8, 4.02], material: 'glass', group: 'window' },
-      { type: 'box', size: [1.2, 1.2, 0.05], position: [2.5, 1.8, 4.02], material: 'glass', group: 'window' },
-      { type: 'box', size: [0.05, 1.2, 1.2], position: [-5.02, 1.8, -1], material: 'glass', group: 'window' },
-      { type: 'box', size: [0.05, 1.2, 1.2], position: [5.02, 1.8, 1.5], material: 'glass', group: 'window' },
-      { type: 'box', size: [0.9, 2.05, 0.05], position: [0, 1.025, 4.02], material: 'wood', color: '#3f6fa0', group: 'door' },
-      { type: 'box', size: [9.6, 0.05, 7.6], position: [0, 0.03, 0], material: 'wood', color: '#c9b28a', group: 'interior' },
-      { type: 'box', size: [0.05, 3.0, 7.6], position: [-2, 1.6, 0], material: 'wood', group: 'interior' },
-      { type: 'box', size: [0.05, 3.0, 7.6], position: [2, 1.6, 0], material: 'wood', group: 'interior' },
-      { type: 'box', size: [0.85, 2.0, 0.15], position: [-2, 1.025, -2.5], material: 'wood', color: '#6b4a2f', group: 'interior-door' },
-      { type: 'box', size: [0.85, 2.0, 0.15], position: [2, 1.025, 1.5], material: 'wood', color: '#6b4a2f', group: 'interior-door' },
-    ] },
+    modelSpec: { parts: (() => {
+      const spec = { parts: [
+        { type: 'box', size: [10, 3.2, 8], position: [0, 1.6, 0], material: 'wood', color: '#a9d3ea', group: 'structure' },
+        { type: 'cylinder', radiusTop: 0.001, radiusBottom: 7.2, height: 1.8, position: [0, 4.1, 0], material: 'metal', color: '#243447', group: 'roof' },
+        { type: 'box', size: [1.2, 1.2, 0.05], position: [-2.5, 1.8, 4.02], material: 'glass', group: 'window' },
+        { type: 'box', size: [1.2, 1.2, 0.05], position: [2.5, 1.8, 4.02], material: 'glass', group: 'window' },
+        { type: 'box', size: [0.05, 1.2, 1.2], position: [-5.02, 1.8, -1], material: 'glass', group: 'window' },
+        { type: 'box', size: [0.05, 1.2, 1.2], position: [5.02, 1.8, 1.5], material: 'glass', group: 'window' },
+        { type: 'box', size: [0.9, 2.05, 0.05], position: [0, 1.025, 4.02], material: 'wood', color: '#3f6fa0', group: 'door' },
+        { type: 'box', size: [9.6, 0.05, 7.6], position: [0, 0.03, 0], material: 'wood', color: '#c9b28a', group: 'interior' },
+      ] };
+      // Real front-zone/hallway/bedroom-bay layout instead of one or two
+      // straight walls slicing the box into equal cells.
+      buildRealisticFloorPlan(spec, 1, spec.parts[0]);
+      return spec.parts;
+    })() },
   },
   duplex: {
     title: 'Two-Story Duplex', category: 'house',
@@ -593,37 +699,38 @@ const TEMPLATES = {
       'Apply roofing shingles and finish exterior trim.',
       'Complete interior drywall and finish work on both floors.',
     ],
-    modelSpec: { parts: [
-      // Ground floor (y 0 → 3)
-      { type: 'box', size: [10, 3, 8], position: [0, 1.5, 0], material: 'wood', color: '#bcdcee', group: 'structure', floor: 1 },
-      { type: 'box', size: [1.2, 1.3, 0.05], position: [-3.3, 1.55, 4.02], material: 'glass', group: 'window', floor: 1 },
-      { type: 'box', size: [1.2, 1.3, 0.05], position: [1.7, 1.55, 4.02], material: 'glass', group: 'window', floor: 1 },
-      { type: 'box', size: [0.05, 1.3, 1.3], position: [-5.02, 1.55, -1.2], material: 'glass', group: 'window', floor: 1 },
-      { type: 'box', size: [0.05, 1.3, 1.3], position: [5.02, 1.55, 1.6], material: 'glass', group: 'window', floor: 1 },
-      { type: 'box', size: [1.3, 1.3, 0.05], position: [0, 1.55, -4.02], material: 'glass', group: 'window', floor: 1 },
-      { type: 'box', size: [0.95, 2.05, 0.05], position: [-0.9, 1.025, 4.02], material: 'wood', color: '#6b4a2f', group: 'door', floor: 1 },
-      { type: 'box', size: [9.6, 0.05, 7.6], position: [0, 0.03, 0], material: 'wood', color: '#c9b28a', group: 'interior', floor: 1 },
-      { type: 'box', size: [0.06, 2.8, 7.6], position: [-1.5, 1.43, 0], material: 'wood', color: '#eef0ea', group: 'interior', floor: 1, room: 'Living Room' },
-      { type: 'box', size: [6.5, 2.8, 0.06], position: [1.75, 1.43, 1.5], material: 'wood', color: '#eef0ea', group: 'interior', floor: 1, room: 'Kitchen' },
-      { type: 'box', size: [0.85, 2.0, 0.15], position: [-1.5, 1.0, 2.0], material: 'wood', color: '#6b4a2f', group: 'interior-door', floor: 1 },
-      { type: 'box', size: [0.85, 2.0, 0.15], position: [0.0, 1.0, 1.5], material: 'wood', color: '#6b4a2f', group: 'interior-door', floor: 1 },
-      // Upper floor (y 3 → 6) — same footprint, own openings, own trim tone
-      { type: 'box', size: [10, 3, 8], position: [0, 4.5, 0], material: 'wood', color: '#8fc4e0', group: 'structure', floor: 2 },
-      { type: 'box', size: [1.1, 1.2, 0.05], position: [-3.6, 4.5, 4.02], material: 'glass', group: 'window', floor: 2 },
-      { type: 'box', size: [1.1, 1.2, 0.05], position: [3.0, 4.5, 4.02], material: 'glass', group: 'window', floor: 2 },
-      { type: 'box', size: [0.05, 1.2, 1.2], position: [-5.02, 4.5, -1.6], material: 'glass', group: 'window', floor: 2 },
-      { type: 'box', size: [0.05, 1.2, 1.2], position: [5.02, 4.5, 1.8], material: 'glass', group: 'window', floor: 2 },
-      { type: 'box', size: [1.2, 1.2, 0.05], position: [0.2, 4.5, -4.02], material: 'glass', group: 'window', floor: 2 },
-      { type: 'box', size: [1.6, 2.05, 0.05], position: [-0.4, 4.025, 4.02], material: 'glass', color: '#bcdfe6', group: 'door', floor: 2 },
-      { type: 'box', size: [3.2, 1.0, 1.3], position: [-0.4, 3.0, 4.02], material: 'wood', color: '#c9b28a', group: 'balcony', floor: 2 },
-      { type: 'box', size: [9.6, 0.05, 7.6], position: [0, 3.03, 0], material: 'wood', color: '#e3d8c1', group: 'interior', floor: 2 },
-      { type: 'box', size: [0.06, 2.8, 7.6], position: [0.3, 4.43, 0], material: 'wood', color: '#f2f0e6', group: 'interior', floor: 2, room: 'Bedroom 1' },
-      { type: 'box', size: [4.7, 2.8, 0.06], position: [2.65, 4.43, 0], material: 'wood', color: '#f2f0e6', group: 'interior', floor: 2, room: 'Bedroom 2' },
-      { type: 'box', size: [0.85, 2.0, 0.15], position: [0.3, 4.0, -2.0], material: 'wood', color: '#6b4a2f', group: 'interior-door', floor: 2 },
-      { type: 'box', size: [0.85, 2.0, 0.15], position: [1.0, 4.0, 0.0], material: 'wood', color: '#6b4a2f', group: 'interior-door', floor: 2 },
-      // Roof atop the upper floor
-      { type: 'cylinder', radiusTop: 0.001, radiusBottom: 7.3, height: 2.1, position: [0, 7.05, 0], material: 'metal', color: '#243447', group: 'roof', floor: 2 },
-    ] },
+    modelSpec: { parts: (() => {
+      const spec = { parts: [
+        // Ground floor (y 0 → 3)
+        { type: 'box', size: [10, 3, 8], position: [0, 1.5, 0], material: 'wood', color: '#bcdcee', group: 'structure', floor: 1 },
+        { type: 'box', size: [1.2, 1.3, 0.05], position: [-3.3, 1.55, 4.02], material: 'glass', group: 'window', floor: 1 },
+        { type: 'box', size: [1.2, 1.3, 0.05], position: [1.7, 1.55, 4.02], material: 'glass', group: 'window', floor: 1 },
+        { type: 'box', size: [0.05, 1.3, 1.3], position: [-5.02, 1.55, -1.2], material: 'glass', group: 'window', floor: 1 },
+        { type: 'box', size: [0.05, 1.3, 1.3], position: [5.02, 1.55, 1.6], material: 'glass', group: 'window', floor: 1 },
+        { type: 'box', size: [1.3, 1.3, 0.05], position: [0, 1.55, -4.02], material: 'glass', group: 'window', floor: 1 },
+        { type: 'box', size: [0.95, 2.05, 0.05], position: [-0.9, 1.025, 4.02], material: 'wood', color: '#6b4a2f', group: 'door', floor: 1 },
+        { type: 'box', size: [9.6, 0.05, 7.6], position: [0, 0.03, 0], material: 'wood', color: '#c9b28a', group: 'interior', floor: 1 },
+        // Upper floor (y 3 → 6) — same footprint, own openings, own trim tone
+        { type: 'box', size: [10, 3, 8], position: [0, 4.5, 0], material: 'wood', color: '#8fc4e0', group: 'structure', floor: 2 },
+        { type: 'box', size: [1.1, 1.2, 0.05], position: [-3.6, 4.5, 4.02], material: 'glass', group: 'window', floor: 2 },
+        { type: 'box', size: [1.1, 1.2, 0.05], position: [3.0, 4.5, 4.02], material: 'glass', group: 'window', floor: 2 },
+        { type: 'box', size: [0.05, 1.2, 1.2], position: [-5.02, 4.5, -1.6], material: 'glass', group: 'window', floor: 2 },
+        { type: 'box', size: [0.05, 1.2, 1.2], position: [5.02, 4.5, 1.8], material: 'glass', group: 'window', floor: 2 },
+        { type: 'box', size: [1.2, 1.2, 0.05], position: [0.2, 4.5, -4.02], material: 'glass', group: 'window', floor: 2 },
+        { type: 'box', size: [1.6, 2.05, 0.05], position: [-0.4, 4.025, 4.02], material: 'glass', color: '#bcdfe6', group: 'door', floor: 2 },
+        { type: 'box', size: [3.2, 1.0, 1.3], position: [-0.4, 3.0, 4.02], material: 'wood', color: '#c9b28a', group: 'balcony', floor: 2 },
+        { type: 'box', size: [9.6, 0.05, 7.6], position: [0, 3.03, 0], material: 'wood', color: '#e3d8c1', group: 'interior', floor: 2 },
+        // Roof atop the upper floor
+        { type: 'cylinder', radiusTop: 0.001, radiusBottom: 7.3, height: 2.1, position: [0, 7.05, 0], material: 'metal', color: '#243447', group: 'roof', floor: 2 },
+      ] };
+      // Real front-zone/hallway/bedroom-bay layout on each floor instead of
+      // one straight wall slicing each floor into two equal rooms.
+      const floor1Envelope = spec.parts.find(p => p.group === 'structure' && p.floor === 1);
+      const floor2Envelope = spec.parts.find(p => p.group === 'structure' && p.floor === 2);
+      buildRealisticFloorPlan(spec, 1, floor1Envelope);
+      buildRealisticFloorPlan(spec, 2, floor2Envelope);
+      return spec.parts;
+    })() },
   },
 };
 

@@ -75,6 +75,110 @@ export function getShadowTexture() {
   return shadowTextureCache;
 }
 
+// ---------------------------------------------------------------------------
+// Painted-siding and shingle-roof textures — tinted per-instance from
+// whatever hex color the AI (or the user's swatch picker) chose, cached by
+// color so repeat colors across a model/estate reuse one canvas instead of
+// redrawing it. This is what turns a flat single-color wall/roof box into
+// something that reads as painted board siding and coursed roofing, the way
+// a real finished elevation photo does, instead of a solid plastic block.
+// ---------------------------------------------------------------------------
+const sidingTextureCache = new Map();
+export function getSidingTexture(colorHex) {
+  const key = colorHex || '#cfc9b8';
+  if (sidingTextureCache.has(key)) return sidingTextureCache.get(key);
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size; canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const base = new THREE.Color(key);
+  ctx.fillStyle = `rgb(${Math.round(base.r * 255)},${Math.round(base.g * 255)},${Math.round(base.b * 255)})`;
+  ctx.fillRect(0, 0, size, size);
+  // Vertical panel seams — the recessed joints between siding/cladding boards.
+  const panelW = size / 8;
+  for (let x = 0; x <= size; x += panelW) {
+    const grad = ctx.createLinearGradient(x - 3, 0, x + 3, 0);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(0.5, 'rgba(0,0,0,0.18)');
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(x - 3, 0, 6, size);
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    ctx.fillRect(x + 2, 0, 1.5, size);
+  }
+  // Faint horizontal weathering streaks so the paint doesn't look perfectly flat.
+  for (let i = 0; i < 26; i++) {
+    const y = Math.random() * size;
+    ctx.strokeStyle = `rgba(0,0,0,${0.02 + Math.random() * 0.045})`;
+    ctx.lineWidth = 0.6 + Math.random();
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(size, y + (Math.random() - 0.5) * 4);
+    ctx.stroke();
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(3, 1.4);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  sidingTextureCache.set(key, texture);
+  return texture;
+}
+
+const roofTextureCache = new Map();
+export function getRoofTexture(colorHex) {
+  const key = colorHex || '#243447';
+  if (roofTextureCache.has(key)) return roofTextureCache.get(key);
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size; canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const base = new THREE.Color(key);
+  ctx.fillStyle = `rgb(${Math.round(base.r * 255)},${Math.round(base.g * 255)},${Math.round(base.b * 255)})`;
+  ctx.fillRect(0, 0, size, size);
+  // Horizontal shingle/sheet courses.
+  const courseH = size / 14;
+  for (let y = 0; y <= size; y += courseH) {
+    ctx.fillStyle = 'rgba(0,0,0,0.24)';
+    ctx.fillRect(0, y, size, 1.6);
+    ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    ctx.fillRect(0, y + 2, size, 1);
+  }
+  // Fine speckle so it catches light unevenly like a real roof surface.
+  for (let i = 0; i < 900; i++) {
+    const x = Math.random() * size, y = Math.random() * size;
+    ctx.fillStyle = `rgba(0,0,0,${0.03 + Math.random() * 0.06})`;
+    ctx.fillRect(x, y, 1, 1);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(2.2, 2.2);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  roofTextureCache.set(key, texture);
+  return texture;
+}
+
+// Exterior wall material — painted board siding, tinted to whatever color
+// the design specifies (falls back to a neutral warm white).
+export function makeSidingMaterial(colorHex) {
+  return new THREE.MeshStandardMaterial({
+    map: getSidingTexture(colorHex),
+    roughness: 0.82,
+    metalness: 0.02,
+    envMapIntensity: 0.5,
+  });
+}
+
+// Roof material — coursed/shingled, tinted to whatever color the design
+// specifies (falls back to a dark slate-navy, the most common real roof tone).
+export function makeRoofMaterial(colorHex) {
+  return new THREE.MeshStandardMaterial({
+    map: getRoofTexture(colorHex || '#243447'),
+    roughness: 0.5,
+    metalness: 0.18,
+    envMapIntensity: 0.9,
+  });
+}
+
 export function makeMaterial(materialName, colorHex) {
   const isGlass = materialName === 'glass';
   const isMetal = materialName === 'metal';
@@ -94,6 +198,86 @@ export function makeMaterial(materialName, colorHex) {
   return new THREE.MeshStandardMaterial(props);
 }
 
+// Wall-shaped vs slab-shaped interior part — tall and thin reads as a
+// partition wall, flat reads as a floor/ceiling slab. Used both to pick
+// interior finish (paint vs floor texture) and, further down, to route
+// interior-door cutting to the right walls.
+function isWallShapedPart(p) {
+  const [w, h, d] = p.size || [0, 0, 0];
+  return h > 1.2 && Math.max(w, d) > 0.5 && Math.min(w, d) < 0.3;
+}
+
+// Interior partition-wall paint — smoother and flatter than the exterior
+// siding texture (no panel seams: real interior drywall reads as a soft
+// eggshell finish, not board cladding), just enough grain to avoid a
+// perfectly flat plastic look under interior lighting.
+const paintTextureCache = new Map();
+export function getPaintTexture(colorHex) {
+  const key = colorHex || '#eef0ea';
+  if (paintTextureCache.has(key)) return paintTextureCache.get(key);
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size; canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const base = new THREE.Color(key);
+  ctx.fillStyle = `rgb(${Math.round(base.r * 255)},${Math.round(base.g * 255)},${Math.round(base.b * 255)})`;
+  ctx.fillRect(0, 0, size, size);
+  for (let i = 0; i < 900; i++) {
+    const x = Math.random() * size, y = Math.random() * size;
+    ctx.fillStyle = `rgba(0,0,0,${0.015 + Math.random() * 0.025})`;
+    ctx.fillRect(x, y, 1, 1);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(2, 2);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  paintTextureCache.set(key, texture);
+  return texture;
+}
+export function makeInteriorPaintMaterial(colorHex) {
+  return new THREE.MeshStandardMaterial({ map: getPaintTexture(colorHex), roughness: 0.9, metalness: 0.01, envMapIntensity: 0.3 });
+}
+
+// Interior floor — plank texture tinted to whatever color the AI/template
+// chose for the slab, instead of a single flat fill color.
+const floorTextureCache = new Map();
+export function getFloorTexture(colorHex) {
+  const key = colorHex || '#c9b28a';
+  if (floorTextureCache.has(key)) return floorTextureCache.get(key);
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size; canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const base = new THREE.Color(key);
+  ctx.fillStyle = `rgb(${Math.round(base.r * 255)},${Math.round(base.g * 255)},${Math.round(base.b * 255)})`;
+  ctx.fillRect(0, 0, size, size);
+  const plankH = size / 10;
+  for (let y = 0; y <= size; y += plankH) {
+    ctx.fillStyle = 'rgba(0,0,0,0.14)';
+    ctx.fillRect(0, y, size, 1.4);
+    // stagger plank end-joints row to row, like a real floated floor
+    const offset = (Math.round(y / plankH) % 2) * size * 0.3;
+    for (let x = -size; x < size * 2; x += size * 0.6) {
+      ctx.fillStyle = 'rgba(0,0,0,0.08)';
+      ctx.fillRect(x + offset, y + 1.5, 1.2, plankH - 1.5);
+    }
+  }
+  for (let i = 0; i < 500; i++) {
+    const x = Math.random() * size, y = Math.random() * size;
+    ctx.fillStyle = `rgba(80,55,25,${0.03 + Math.random() * 0.05})`;
+    ctx.fillRect(x, y, 1 + Math.random() * 6, 0.6);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(3, 3);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  floorTextureCache.set(key, texture);
+  return texture;
+}
+export function makeFloorMaterial(colorHex) {
+  return new THREE.MeshStandardMaterial({ map: getFloorTexture(colorHex), roughness: 0.55, metalness: 0.02, envMapIntensity: 0.6 });
+}
+
 export function buildMesh(part) {
   let geometry;
   if (part.type === 'cylinder') {
@@ -103,7 +287,14 @@ export function buildMesh(part) {
     geometry = new THREE.BoxGeometry(w, h, d);
   }
   const isGlass = part.material === 'glass';
-  const mesh = new THREE.Mesh(geometry, makeMaterial(part.material, part.color));
+  const material = part.group === 'roof'
+    ? makeRoofMaterial(part.color)
+    : part.group === 'structure'
+      ? makeSidingMaterial(part.color)
+      : part.group === 'interior'
+        ? (isWallShapedPart(part) ? makeInteriorPaintMaterial(part.color) : makeFloorMaterial(part.color))
+        : makeMaterial(part.material, part.color);
+  const mesh = new THREE.Mesh(geometry, material);
   const [x, y, z] = part.position || [0, 0, 0];
   mesh.position.set(x, y, z);
   mesh.rotation.y = part.rotation || 0;
@@ -160,7 +351,7 @@ function buildOpeningDetail({ group, dims, position, rotY = 0, material, color, 
   // part type needed.
   const isGarage = isDoor && ow >= 2.2;
   const frameT = Math.max(0.045, Math.min(ow, oh) * 0.06);
-  const frameColor = isDoor ? '#5a3d24' : '#eee7d8';
+  const frameColor = isDoor ? '#5a3d24' : '#f4f1e6';
   const frameMat = isDoor ? 'wood' : 'metal';
   const frameD = Math.max(od * 1.3, 0.03);
   const faceOut = od * 0.55 + 0.006;
@@ -340,12 +531,20 @@ export function buildHipRoofMesh({ width, depth, ridgeHeight, overhang = 0.4, po
   }
 
   const positions = new Float32Array(tris.length * 3);
-  tris.forEach((v, i) => { positions[i * 3] = v[0]; positions[i * 3 + 1] = v[1]; positions[i * 3 + 2] = v[2]; });
+  const uvs = new Float32Array(tris.length * 2);
+  tris.forEach((v, i) => {
+    positions[i * 3] = v[0]; positions[i * 3 + 1] = v[1]; positions[i * 3 + 2] = v[2];
+    // Planar XZ projection for the shingle texture — a simple, cheap UV
+    // scheme that's a reasonable approximation for a low-pitch hip roof.
+    uvs[i * 2] = (v[0] + halfW) / (halfW * 2 || 1);
+    uvs[i * 2 + 1] = (v[2] + halfD) / (halfD * 2 || 1);
+  });
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
   geometry.computeVertexNormals();
 
-  const mat = makeMaterial(material, color);
+  const mat = makeRoofMaterial(color);
   mat.side = THREE.DoubleSide; // robust to any face winding, since the underside is never meant to be seen anyway
   const mesh = new THREE.Mesh(geometry, mat);
   const [cx, cy, cz] = position;
@@ -359,6 +558,40 @@ export function buildHipRoofMesh({ width, depth, ridgeHeight, overhang = 0.4, po
   mesh.userData.originalPosition = mesh.position.clone();
   mesh.userData.originalRotationY = 0;
   return mesh;
+}
+
+// White fascia board tracing the eave perimeter of a hip roof — the crisp
+// painted trim line that separates a dark roof from the walls below it in
+// real finished elevations. Purely decorative dressing, same spirit as the
+// corner pilasters/plinth already added per floor.
+function buildRoofFascia({ width, depth, overhang, position, color = '#f4f1e6', floor }) {
+  const halfW = width / 2 + overhang;
+  const halfD = depth / 2 + overhang;
+  const [cx, cy, cz] = position;
+  const boardH = 0.1;
+  const boardT = 0.05;
+  const mat = makeMaterial('metal', color);
+  mat.roughness = 0.5;
+  const meshes = [];
+  const addBoard = (bw, bx, bz, rotY) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(bw, boardH, boardT), mat);
+    m.position.set(cx + bx, cy - boardH / 2 + 0.015, cz + bz);
+    m.rotation.y = rotY;
+    m.castShadow = true;
+    m.receiveShadow = true;
+    m.userData.group = 'roof';
+    m.userData.room = null;
+    m.userData.material = 'metal';
+    if (floor != null) m.userData.floor = floor;
+    m.userData.originalPosition = m.position.clone();
+    m.userData.originalRotationY = rotY;
+    meshes.push(m);
+  };
+  addBoard(halfW * 2 + boardT, 0, -halfD, 0);
+  addBoard(halfW * 2 + boardT, 0, halfD, 0);
+  addBoard(halfD * 2 + boardT, -halfW, 0, Math.PI / 2);
+  addBoard(halfD * 2 + boardT, halfW, 0, Math.PI / 2);
+  return meshes;
 }
 
 // ---------------------------------------------------------------------------
@@ -439,7 +672,7 @@ export function buildHollowShell(structurePart, openingParts) {
     }
   }
 
-  shellBrush.material = makeMaterial(structurePart.material || 'wood', structurePart.color);
+  shellBrush.material = makeSidingMaterial(structurePart.color);
   shellBrush.castShadow = true;
   shellBrush.receiveShadow = true;
   shellBrush.userData.group = 'structure';
@@ -463,6 +696,12 @@ export function buildWallWithOpenings(wallPart, openingParts) {
   const [w, h, d] = wallPart.size || [2, 3, 0.15];
   const rotY = wallPart.rotation || 0;
   const [wx, wy, wz] = wallPart.position || [0, h / 2, 0];
+  // Interior partition walls (routed here from buildInteriorWallWithDoors so
+  // a door cut into a partition gets the same real-CSG treatment as an
+  // exterior door) get the smoother interior paint finish; every other wall
+  // through this path — manual-modeler exterior walls, AI structure walls —
+  // gets exterior board siding.
+  const wallMaterial = () => (wallPart.group === 'interior' ? makeInteriorPaintMaterial(wallPart.color) : makeSidingMaterial(wallPart.color));
 
   const wallBrush = new Brush(new THREE.BoxGeometry(w, h, d));
   wallBrush.position.set(wx, wy, wz);
@@ -470,7 +709,7 @@ export function buildWallWithOpenings(wallPart, openingParts) {
   wallBrush.updateMatrixWorld();
 
   if (!openingParts.length) {
-    const solid = new THREE.Mesh(wallBrush.geometry, makeMaterial(wallPart.material || 'wood', wallPart.color));
+    const solid = new THREE.Mesh(wallBrush.geometry, wallMaterial());
     solid.position.copy(wallBrush.position);
     solid.rotation.y = rotY;
     solid.castShadow = true;
@@ -521,7 +760,7 @@ export function buildWallWithOpenings(wallPart, openingParts) {
     fillMeshes.push(...detailMeshes);
   }
 
-  shellBrush.material = makeMaterial(wallPart.material || 'wood', wallPart.color);
+  shellBrush.material = wallMaterial();
   shellBrush.castShadow = true;
   shellBrush.receiveShadow = true;
   shellBrush.userData.group = 'structure';
@@ -586,8 +825,7 @@ export function buildManualMeshes(parts) {
 // so rooms are genuinely connected rather than just visually separated.
 // ---------------------------------------------------------------------------
 function isPartitionWall(p) {
-  const [w, h, d] = p.size || [0, 0, 0];
-  return h > 1.2 && Math.max(w, d) > 0.5 && Math.min(w, d) < 0.3;
+  return isWallShapedPart(p);
 }
 
 function doorMatchesWall(doorPart, wallPart) {
@@ -683,7 +921,21 @@ function addSkirtingForWall(meshes, wallPart, floorNum) {
 // roof, balconies) from its modelSpec.parts — shared by the single-building
 // editor and the multi-building estate viewer so both produce identical
 // geometry quality.
-export function buildBuildingMeshes(parts) {
+export function buildBuildingMeshes(rawParts) {
+  // AI-authored partition walls almost always come through as material
+  // "wood" with no explicit color (that's just the schema's generic
+  // fallback), which renders as a strong golden-pine tone that clashes with
+  // a light exterior palette and reads as unfinished rather than "well
+  // partitioned". Give any wall-shaped interior part a clean off-white
+  // finish by default unless the AI (or a template) chose a color on
+  // purpose — floor slabs (flat, not wall-shaped) are untouched and keep
+  // their warm wood-floor look.
+  const parts = rawParts.map(p => {
+    if (p.group === 'interior' && !p.color && isPartitionWall(p)) {
+      return { ...p, color: '#eef0ea' };
+    }
+    return p;
+  });
   const openingParts = parts.filter(p => p.group === 'door' || p.group === 'window');
   const structureParts = parts.filter(p => p.group === 'structure' || !p.group);
   const interiorDoorParts = parts.filter(p => p.group === 'interior-door');
@@ -808,6 +1060,7 @@ export function buildBuildingMeshes(parts) {
       position: [px, baseY, pz],
       material: p.material || 'metal', color: p.color, floor: roofFloor,
     }));
+    meshes.push(...buildRoofFascia({ width: ew, depth: ed, overhang, position: [px, baseY, pz], floor: roofFloor }));
   });
 
   return meshes;
