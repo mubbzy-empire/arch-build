@@ -335,6 +335,14 @@ function buildRealisticFloorPlan(spec, floorNum, envelope) {
   });
 }
 
+// Same wall-shaped-vs-slab-shaped test the frontend renderer uses (kept as
+// a standalone copy here since this file has no THREE.js/frontend access) —
+// tall and thin reads as a partition wall, flat reads as a floor slab.
+function isWallShapedInterior(p) {
+  const [w, h, d] = p.size || [0, 0, 0];
+  return h > 1.2 && Math.max(w, d) > 0.5 && Math.min(w, d) < 0.3;
+}
+
 function reinforceDesign(result) {
   const spec = result?.modelSpec;
   if (!spec || !Array.isArray(spec.parts) || !spec.parts.length) return result;
@@ -368,7 +376,31 @@ function reinforceDesign(result) {
     const existingRooms = new Set(
       spec.parts.filter(p => (p.floor ?? 1) === floorNum && p.group === 'interior' && p.room).map(p => p.room)
     );
-    if (existingRooms.size >= 3) return; // AI already planned real rooms for this floor — leave it alone
+    // Room *names* alone aren't proof of a real layout — a sparse response
+    // can tag three room names onto one or two walls that don't actually
+    // enclose anything (exactly what let an under-detailed live-AI result
+    // slip past this check with almost no partitioning at all). Also
+    // require enough actual wall-shaped interior parts to plausibly enclose
+    // that many rooms, using the same (rooms − 1) × 2 bar the prompt itself
+    // asks the model to meet.
+    const partitionWallCount = spec.parts.filter(p => (p.floor ?? 1) === floorNum && p.group === 'interior' && isWallShapedInterior(p)).length;
+    // Roughly one dividing wall per named room is the realistic ballpark
+    // once shared walls are accounted for — strict enough to catch a
+    // sparse response that tags several room names onto one or two walls
+    // (exactly what let an under-partitioned result slip through before),
+    // without discarding a genuinely reasonable AI-authored layout.
+    const enoughWalls = partitionWallCount >= existingRooms.size;
+    if (existingRooms.size >= 3 && enoughWalls) return; // AI already planned a real, enclosed layout for this floor — leave it alone
+
+    // Discard whatever partial partitioning the AI did attempt for this
+    // floor (walls + their doors) before rebuilding — layering a full
+    // layout on top of a sparse, incomplete one would leave two competing,
+    // overlapping wall schemes instead of one coherent plan. The floor slab
+    // itself (not wall-shaped) is left alone.
+    spec.parts = spec.parts.filter(p => !(
+      (p.floor ?? 1) === floorNum
+      && (p.group === 'interior-door' || (p.group === 'interior' && isWallShapedInterior(p)))
+    ));
 
     buildRealisticFloorPlan(spec, floorNum, envelope);
     addedAny = true;
