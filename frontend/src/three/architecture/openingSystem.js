@@ -40,6 +40,7 @@ export function buildOpeningFill(wall, opening) {
   group.userData.group = opening.type === 'window' ? 'window' : 'door';
   group.userData.openingId = opening.id;
   group.userData.room = opening.room;
+  group.userData.material = opening.type === 'window' ? 'glazing' : opening.type;
 
   const w = opening.width, h = opening.height, wallT = wall.thickness;
   const frameDepth = Math.max(wallT * 0.9, 0.06);

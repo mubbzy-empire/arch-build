@@ -48,6 +48,7 @@ export function buildWallGroup(wall, allWallsOnFloor = []) {
   const material = wall.type === 'interior'
     ? interiorMaterial('plaster', wall.color)
     : exteriorMaterial(wall.material || 'plaster', wall.color);
+  const materialLabel = wall.type === 'interior' ? 'plaster' : (wall.material || 'plaster');
 
   const group = new THREE.Group();
   group.userData.group = 'structure';
@@ -64,6 +65,8 @@ export function buildWallGroup(wall, allWallsOnFloor = []) {
     solid.castShadow = true; solid.receiveShadow = true;
     solid.userData.group = 'structure';
     solid.userData.wallId = wall.id;
+    solid.userData.material = materialLabel;
+    solid.userData.wallType = wall.type;
     solid.userData.originalPosition = solid.position.clone();
     solid.userData.originalRotationY = rotY;
     group.add(solid);
@@ -91,6 +94,8 @@ export function buildWallGroup(wall, allWallsOnFloor = []) {
   shell.castShadow = true; shell.receiveShadow = true;
   shell.userData.group = 'structure';
   shell.userData.wallId = wall.id;
+  shell.userData.material = materialLabel;
+  shell.userData.wallType = wall.type;
   shell.userData.originalPosition = shell.position.clone();
   shell.userData.originalRotationY = rotY;
   group.add(shell);

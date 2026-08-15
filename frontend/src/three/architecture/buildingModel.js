@@ -48,13 +48,20 @@ export function nextId(prefix = 'id') {
 export function createWall({
   id, start, end, thickness = 0.2, height = 3.0, baseElevation = 0,
   type = 'exterior', // 'exterior' | 'interior' | 'parapet' | 'compound'
-  material = 'plaster', color, floor = 1, rooms = [], openings = [],
+  material = 'plaster', color, floor = 1, rooms = [], roomSpans = [], openings = [],
 } = {}) {
   return {
     id: id || nextId('wall'),
     start, end, thickness, height, baseElevation,
     type, material, color, floor,
-    rooms, // [roomIdLeft, roomIdRight] where known — filled by room generator
+    rooms, // [roomId...] every room this wall borders — filled by the room generator
+    // roomSpans: [{ room, from, to }] — the along-wall distance range (from
+    // wall.start, in the same units as offsetAlongWall) that belongs to
+    // each room, for walls shared by more than one room (two rooms sitting
+    // side by side against the same exterior line merge into one
+    // continuous wall — this is what lets a window center on ITS room's
+    // stretch of that wall instead of the whole merged wall's midpoint).
+    roomSpans,
     openings: openings.map((o) => normalizeOpening(o)),
   };
 }

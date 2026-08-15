@@ -26,6 +26,7 @@ export default function ModelViewer({ modelSpec, title }) {
   const [editMode, setEditMode] = useState(false);
   const [transformMode, setTransformMode] = useState('translate');
   const [selectedLabel, setSelectedLabel] = useState(null);
+  const [dragIsWholeWall, setDragIsWholeWall] = useState(false);
   const [selectedInfo, setSelectedInfo] = useState(null);
   const [colorOverrides, setColorOverrides] = useState({});
   const [buildError, setBuildError] = useState(null);
@@ -77,6 +78,7 @@ export default function ModelViewer({ modelSpec, title }) {
     setEditMode(false);
     setTransformMode('translate');
     setSelectedLabel(null);
+          setDragIsWholeWall(false);
     setSelectedInfo(null);
     setBuildError(null);
     setStoryView(false);
@@ -316,7 +318,22 @@ export default function ModelViewer({ modelSpec, title }) {
             material: target.userData.material || null,
           });
           if (editModeRef.current) {
-            transformControls.attach(target);
+            // A window/door's position is derived from its parent wall at
+            // build time and its opening is CSG-cut directly into that
+            // wall's geometry — the two aren't independent objects. Letting
+            // the gizmo drag just the window's frame would pull it away
+            // from its own hole, leaving a mismatched cut behind. Dragging
+            // the whole wall (openings included) keeps them attached, the
+            // way section 27 of the spec expects.
+            let dragTarget = target;
+            let redirectedToWall = false;
+            if (target.userData.group === 'window' || target.userData.group === 'door') {
+              let ancestor = target;
+              while (ancestor && ancestor.userData.wallId == null) ancestor = ancestor.parent;
+              if (ancestor) { dragTarget = ancestor; redirectedToWall = true; }
+            }
+            setDragIsWholeWall(redirectedToWall);
+            transformControls.attach(dragTarget);
             transformControls.setMode(transformModeRef.current);
             transformControls.enabled = true;
             transformControls.visible = true;
@@ -326,6 +343,7 @@ export default function ModelViewer({ modelSpec, title }) {
           transformControls.enabled = false;
           transformControls.visible = false;
           setSelectedLabel(null);
+          setDragIsWholeWall(false);
           setSelectedInfo(null);
         }
       };
@@ -376,7 +394,12 @@ export default function ModelViewer({ modelSpec, title }) {
 
   useEffect(() => {
     meshesRef.current.forEach(m => { m.material.wireframe = wireframe; });
-  }, [wireframe]);
+    // Re-run whenever a new scene is built too, not just when the button
+    // itself is toggled — materialSystem.js now caches/shares material
+    // instances, so a fresh building's meshes could otherwise inherit a
+    // stale wireframe=true left over from a previously viewed building
+    // that happened to share the same cached material.
+  }, [wireframe, modelSpec, architecturalBuilding]);
 
   useEffect(() => {
     meshesRef.current.forEach(m => { if (m.userData.group === 'roof') m.visible = !hideRoof; });
@@ -389,7 +412,21 @@ export default function ModelViewer({ modelSpec, title }) {
   useEffect(() => {
     meshesRef.current.forEach(m => {
       const override = colorOverrides[m.userData.group];
-      if (override) m.material.color.set(override);
+      if (!override) return;
+      // materialSystem.js caches materials by their params, so many meshes
+      // across a building (and across other buildings/projects loaded
+      // later in the same session) can share ONE material instance.
+      // Mutating .color in place would leak this override onto every mesh
+      // sharing that cached instance, including ones in a completely
+      // different building loaded afterward. Clone once per mesh on first
+      // override (tagged so a second color pick on the same mesh just
+      // mutates its own already-private clone instead of re-cloning), so
+      // the shared cache stays untouched for everyone else.
+      if (!m.material.userData?.isOverrideClone) {
+        m.material = m.material.clone();
+        m.material.userData = { ...m.material.userData, isOverrideClone: true };
+      }
+      m.material.color.set(override);
     });
   }, [colorOverrides, modelSpec]);
 
@@ -413,6 +450,7 @@ export default function ModelViewer({ modelSpec, title }) {
       transformRef.current.visible = false;
     }
     setSelectedLabel(null);
+          setDragIsWholeWall(false);
     setSelectedInfo(null);
     setStoryView(false);
   };
@@ -493,7 +531,7 @@ export default function ModelViewer({ modelSpec, title }) {
         <span className="viewer-hint">New architecture engine active{architecturalBuilding.name ? ` — ${architecturalBuilding.name}` : ''}</span>
       )}
       {editMode && (
-        <span className="viewer-hint">{selectedLabel ? `Editing: ${selectedLabel} — drag to ${transformMode === 'rotate' ? 'rotate' : 'move'}` : 'Tap a part to select it'}</span>
+        <span className="viewer-hint">{selectedLabel ? `Editing: ${selectedLabel}${dragIsWholeWall ? ' (moves its whole wall — windows/doors are cut into the wall, not separate)' : ''} — drag to ${transformMode === 'rotate' ? 'rotate' : 'move'}` : 'Tap a part to select it'}</span>
       )}
       <div className="viewer-canvas" ref={mountRef} />
       <PartInfoPanel info={selectedInfo} onClose={() => setSelectedInfo(null)} />

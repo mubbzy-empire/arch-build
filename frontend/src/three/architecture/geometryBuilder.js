@@ -87,6 +87,20 @@ export function buildBuildingGroup(rawBuilding) {
       while (ancestor && ancestor.userData.floor == null) ancestor = ancestor.parent;
       if (ancestor) obj.userData.floor = ancestor.userData.floor;
     }
+    // Same for material label and room name — lets PartInfoPanel show real
+    // info (e.g. "glazing" / "Master Bedroom") for a window's individual
+    // glass/frame meshes, which openingSystem.js only tags on the opening's
+    // parent Group, not each leaf mesh inside it.
+    if (!obj.userData.material) {
+      let ancestor = obj.parent;
+      while (ancestor && !ancestor.userData.material) ancestor = ancestor.parent;
+      if (ancestor) obj.userData.material = ancestor.userData.material;
+    }
+    if (!obj.userData.room) {
+      let ancestor = obj.parent;
+      while (ancestor && !ancestor.userData.room) ancestor = ancestor.parent;
+      if (ancestor) obj.userData.room = ancestor.userData.room;
+    }
   });
 
   return {

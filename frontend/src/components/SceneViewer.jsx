@@ -204,11 +204,21 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
         pointerNdc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
         pointerNdc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
         raycaster.setFromCamera(pointerNdc, camera);
-        const allMeshes = buildingGroups.flatMap(g => g.children);
-        const hits = raycaster.intersectObjects(allMeshes, false);
+        // Recursive: a legacy-pipeline building's meshes sit directly under
+        // its group, but an architecture-engine building's meshes are
+        // several levels deep (group -> levels -> walls -> mesh), so a
+        // direct-children-only test (the previous `g.children` approach)
+        // silently missed every one of them — clicking anywhere on a new-
+        // engine estate building never registered a hit.
+        const hits = raycaster.intersectObjects(buildingGroups, true);
         if (hits.length) {
           const target = hits[0].object;
-          const parentGroup = target.parent;
+          // Walk up to whichever ancestor is the building's own top-level
+          // group (tagged with buildingId) — could be immediate for a
+          // legacy building, or several levels up for a new-engine one.
+          let parentGroup = target;
+          while (parentGroup && parentGroup.userData.buildingId == null) parentGroup = parentGroup.parent;
+          if (!parentGroup) return;
           const label = GROUP_LABELS[target.userData.group] || target.userData.group;
           setActiveId(parentGroup.userData.buildingId);
           setSelectedInfo({
@@ -262,7 +272,7 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
         scene.environment?.dispose?.();
         ground.children.forEach(m => { m.geometry?.dispose(); m.material?.dispose(); });
         compound.traverse(m => { m.geometry?.dispose(); m.material?.dispose(); });
-        buildingGroups.forEach(g => g.children.forEach(m => { m.geometry?.dispose(); m.material?.dispose(); }));
+        buildingGroups.forEach(g => g.traverse(m => { m.geometry?.dispose?.(); m.material?.dispose?.(); }));
         if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement);
       };
     } catch (err) {

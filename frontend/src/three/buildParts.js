@@ -3,7 +3,7 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { Brush, Evaluator, SUBTRACTION } from 'three-bvh-csg';
 
 export const MATERIAL_COLORS = { wood: 0xb98a55, metal: 0xaab2bd, glass: 0x8fd0e0, fabric: 0x6f6a63 };
-export const GROUP_LABELS = { structure: 'Walls', roof: 'Roof', door: 'Door', window: 'Windows', interior: 'Interior', 'interior-door': 'Interior door', balcony: 'Balcony', pool: 'Swimming pool', compound: 'Compound wall', object: 'Object' };
+export const GROUP_LABELS = { structure: 'Walls', roof: 'Roof', door: 'Door', window: 'Windows', interior: 'Interior', 'interior-door': 'Interior door', balcony: 'Balcony', pool: 'Swimming pool', compound: 'Compound wall', object: 'Object', stair: 'Stair', slab: 'Slab' };
 
 // ---------------------------------------------------------------------------
 // Cheap procedural textures — generated once on a <canvas> and cached at

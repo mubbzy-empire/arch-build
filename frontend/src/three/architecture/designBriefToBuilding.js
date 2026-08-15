@@ -159,47 +159,93 @@ function layoutPrivateZone(rooms, zone, bedroomCount, bathroomCount, hasStair, i
 // Converts the planned rooms (rectangles) into real wall segments, deduping
 // shared edges between adjacent rooms into a single interior wall, and
 // tagging footprint-boundary edges as exterior.
+// Builds real, continuous wall segments from a floor's room rectangles.
+//
+// The naive approach (one wall per room-polygon edge, merging only when two
+// edges share exact endpoints) fails whenever adjacent rooms are different
+// sizes — e.g. two bedrooms side by side against the back wall each
+// contribute a short edge that SHOULD merge into one continuous wall, but
+// their endpoints don't coincide (the wall between them and the corridor is
+// full-width, but each bedroom's own edge is only its own width), so they
+// never merged and produced dozens of short, disconnected wall fragments
+// instead of clean room boundaries.
+//
+// This version groups every room edge by which line it sits on (its
+// orientation — running along X at a fixed Z, or along Z at a fixed X —
+// plus that fixed coordinate), then merges touching/overlapping intervals
+// on each line into single continuous runs the way you'd merge overlapping
+// calendar bookings. Each merged run becomes exactly one wall, with a
+// roomSpan recorded per room that contributed to it so doors/windows can
+// still be centered on their own room's stretch of a shared wall.
 function wallsFromRooms(rooms, footprintRect, floorIndex, elevation, height) {
-  const edgeMap = new Map(); // key -> { start, end, count }
-  const key = (a, b) => {
-    const r = (v) => Math.round(v * 100) / 100;
-    const p1 = `${r(a[0])},${r(a[1])}`, p2 = `${r(b[0])},${r(b[1])}`;
-    return p1 < p2 ? `${p1}|${p2}` : `${p2}|${p1}`;
-  };
-
-  const onBoundary = (p) => (
-    Math.abs(p[0] - footprintRect.x) < 0.05 || Math.abs(p[0] - (footprintRect.x + footprintRect.width)) < 0.05
-    || Math.abs(p[1] - footprintRect.z) < 0.05 || Math.abs(p[1] - (footprintRect.z + footprintRect.depth)) < 0.05
-  );
+  const EPS = 0.03; // bridges floating-point rounding between touching rects, not real gaps
+  const groupsX = new Map(); // constant Z -> [{room, min, max}]  (edge runs along X)
+  const groupsZ = new Map(); // constant X -> [{room, min, max}]  (edge runs along Z)
+  const roundKey = (v) => Math.round(v / EPS) * EPS;
 
   Object.values(rooms).forEach((room) => {
     if (room.attached) return; // garage handled separately with its own exterior walls
-    const poly = rectPolygon(room.rect);
-    for (let i = 0; i < poly.length; i++) {
-      const a = poly[i], b = poly[(i + 1) % poly.length];
-      const k = key(a, b);
-      if (!edgeMap.has(k)) edgeMap.set(k, { start: a, end: b, count: 0, rooms: [] });
-      const entry = edgeMap.get(k);
-      entry.count += 1;
-      entry.rooms.push(room);
+    const r = room.rect;
+    const edges = [
+      { orient: 'x', at: r.z, min: r.x, max: r.x + r.width },
+      { orient: 'x', at: r.z + r.depth, min: r.x, max: r.x + r.width },
+      { orient: 'z', at: r.x, min: r.z, max: r.z + r.depth },
+      { orient: 'z', at: r.x + r.width, min: r.z, max: r.z + r.depth },
+    ];
+    for (const e of edges) {
+      if (e.max - e.min < 0.05) continue;
+      const map = e.orient === 'x' ? groupsX : groupsZ;
+      const k = roundKey(e.at);
+      if (!map.has(k)) map.set(k, { at: e.at, entries: [] });
+      map.get(k).entries.push({ room: room.name, min: e.min, max: e.max });
     }
   });
 
+  const isOnFootprintBoundary = (orient, at) => (orient === 'x'
+    ? Math.abs(at - footprintRect.z) < 0.1 || Math.abs(at - (footprintRect.z + footprintRect.depth)) < 0.1
+    : Math.abs(at - footprintRect.x) < 0.1 || Math.abs(at - (footprintRect.x + footprintRect.width)) < 0.1);
+
   const walls = [];
-  for (const entry of edgeMap.values()) {
-    const len = Math.hypot(entry.end[0] - entry.start[0], entry.end[1] - entry.start[1]);
-    if (len < 0.1) continue;
-    const isExterior = entry.count === 1 && onBoundary(entry.start) && onBoundary(entry.end);
-    walls.push(createWall({
-      start: entry.start, end: entry.end,
-      thickness: isExterior ? 0.2 : 0.12,
-      height, baseElevation: elevation,
-      type: isExterior ? 'exterior' : 'interior',
-      material: isExterior ? 'plaster' : 'plaster',
-      floor: floorIndex,
-      rooms: entry.rooms.map((r) => r.name),
-    }));
-  }
+  const buildFromGroup = (map, orient) => {
+    for (const { at, entries } of map.values()) {
+      // Merge overlapping/touching intervals on this line into runs.
+      const sorted = [...entries].sort((a, b) => a.min - b.min);
+      const runs = [];
+      for (const e of sorted) {
+        const last = runs[runs.length - 1];
+        if (last && e.min <= last.max + EPS) {
+          last.max = Math.max(last.max, e.max);
+          last.members.push(e);
+        } else {
+          runs.push({ min: e.min, max: e.max, members: [e] });
+        }
+      }
+
+      const exterior = isOnFootprintBoundary(orient, at);
+      for (const run of runs) {
+        if (run.max - run.min < 0.1) continue;
+        const start = orient === 'x' ? [run.min, at] : [at, run.min];
+        const end = orient === 'x' ? [run.max, at] : [at, run.max];
+        const roomSpans = run.members.map((m) => ({
+          room: m.room,
+          from: Math.max(m.min, run.min) - run.min,
+          to: Math.min(m.max, run.max) - run.min,
+        }));
+        walls.push(createWall({
+          start, end,
+          thickness: exterior ? 0.2 : 0.12,
+          height, baseElevation: elevation,
+          type: exterior ? 'exterior' : 'interior',
+          material: 'plaster',
+          floor: floorIndex,
+          rooms: [...new Set(roomSpans.map((s) => s.room))],
+          roomSpans,
+        }));
+      }
+    }
+  };
+  buildFromGroup(groupsX, 'x');
+  buildFromGroup(groupsZ, 'z');
   return walls;
 }
 
@@ -211,6 +257,17 @@ function addWindowsAndDoors(walls, rooms, floorIndex, isGroundFloor) {
       wallsByRoom.get(roomName).push(wall);
     }
   }
+  // The along-wall centre and available span of a specific room's own
+  // stretch of a (possibly shared/merged) wall — this is what lets a
+  // window sit centred on ITS room rather than the whole merged wall.
+  const roomSpanOn = (wall, roomName) => {
+    const span = wall.roomSpans.find((s) => s.room === roomName);
+    if (!span) {
+      const len = Math.hypot(wall.end[0] - wall.start[0], wall.end[1] - wall.start[1]);
+      return { center: len / 2, length: len };
+    }
+    return { center: (span.from + span.to) / 2, length: span.to - span.from };
+  };
 
   const windowSizeByType = {
     living: { width: 2.4, height: 1.6, sill: 0.6, sliding: true },
@@ -227,12 +284,12 @@ function addWindowsAndDoors(walls, rooms, floorIndex, isGroundFloor) {
     const roomWalls = wallsByRoom.get(room.name) || [];
     const extWall = roomWalls.find((w) => w.type === 'exterior');
     if (!extWall) return;
-    const len = Math.hypot(extWall.end[0] - extWall.start[0], extWall.end[1] - extWall.start[1]);
-    const width = Math.min(preset.width, len - 0.4);
+    const { center, length } = roomSpanOn(extWall, room.name);
+    const width = Math.min(preset.width, length - 0.4);
     if (width < 0.35) return;
     addOpening(extWall, {
       type: preset.sliding ? 'sliding-door' : 'window',
-      offsetAlongWall: len / 2,
+      offsetAlongWall: center,
       width, height: preset.height, sillHeight: preset.sliding ? 0 : preset.sill,
       room: room.name,
     });
@@ -244,8 +301,8 @@ function addWindowsAndDoors(walls, rooms, floorIndex, isGroundFloor) {
     const roomWalls = wallsByRoom.get(entranceRoom.name) || [];
     const extWall = roomWalls.find((w) => w.type === 'exterior');
     if (extWall) {
-      const len = Math.hypot(extWall.end[0] - extWall.start[0], extWall.end[1] - extWall.start[1]);
-      addOpening(extWall, { type: 'door', offsetAlongWall: len / 2, width: 1.1, height: 2.1, room: entranceRoom.name });
+      const { center } = roomSpanOn(extWall, entranceRoom.name);
+      addOpening(extWall, { type: 'door', offsetAlongWall: center, width: 1.1, height: 2.1, room: entranceRoom.name });
     }
   }
 
@@ -260,10 +317,10 @@ function addWindowsAndDoors(walls, rooms, floorIndex, isGroundFloor) {
     const fallback = roomWalls.find((w) => w.type === 'interior');
     const wall = doorWall || fallback;
     if (!wall) return;
-    const len = Math.hypot(wall.end[0] - wall.start[0], wall.end[1] - wall.start[1]);
+    const { center, length } = roomSpanOn(wall, room.name);
     const width = room.type === 'bathroom' ? 0.75 : 0.85;
-    if (len < width + 0.3) return;
-    addOpening(wall, { type: 'door', offsetAlongWall: len / 2, width, height: 2.05, room: room.name });
+    if (length < width + 0.3) return;
+    addOpening(wall, { type: 'door', offsetAlongWall: center, width, height: 2.05, room: room.name });
   });
 }
 

@@ -1,6 +1,13 @@
 import React from 'react';
 
-const MATERIAL_LABELS = { wood: 'Wood', metal: 'Metal', glass: 'Glass', fabric: 'Fabric' };
+const MATERIAL_LABELS = {
+  wood: 'Wood', metal: 'Metal', glass: 'Glass', fabric: 'Fabric',
+  // Architecture-engine material kinds (materialSystem.js)
+  plaster: 'Painted Plaster', 'painted-plaster': 'Painted Plaster', concrete: 'Concrete',
+  'exposed-concrete': 'Exposed Concrete', brick: 'Brick', stone: 'Stone', aluminium: 'Aluminium',
+  tile: 'Tile', marble: 'Marble', 'wood-flooring': 'Wood Flooring', ceramic: 'Ceramic', ceiling: 'Ceiling',
+  glazing: 'Glazing', door: 'Door', 'sliding-door': 'Sliding Door', 'garage-door': 'Garage Door', 'french-door': 'French Door',
+};
 
 export default function PartInfoPanel({ info, onClose }) {
   if (!info) return null;

@@ -37,7 +37,31 @@ const INTERIOR_PRESETS = {
   ceiling: { roughness: 0.95, metalness: 0.0, fallbackColor: '#f7f5ef' },
 };
 
+// Material cache: every wall/opening/roof call below used to construct a
+// brand-new MeshStandardMaterial even when the params were identical (a
+// 13-wall bungalow made 13 separate 'plaster' material instances instead of
+// sharing one). On mobile that means extra WebGL program compiles and
+// broken batching for no visual benefit — the master spec's "reusable
+// materials" requirement (mobile performance section). Caching by exact
+// params gives every wall/opening/roof that resolves to the same look one
+// shared instance instead. Materials are cheap, long-lived objects — it's
+// safe for a scene teardown to call dispose() on a cached instance that
+// another still-live scene also references; Three.js just recompiles the
+// GPU program on next use rather than losing any data, the same way this
+// file's underlying canvas textures (see buildParts.js) are already cached
+// and reused across scene rebuilds.
+const materialCache = new Map();
+function cached(key, factory) {
+  if (materialCache.has(key)) return materialCache.get(key);
+  const mat = factory();
+  materialCache.set(key, mat);
+  return mat;
+}
+
 export function exteriorMaterial(kind = 'plaster', colorHex) {
+  return cached(`ext:${kind}:${colorHex || ''}`, () => buildExteriorMaterial(kind, colorHex));
+}
+function buildExteriorMaterial(kind, colorHex) {
   const preset = EXTERIOR_PRESETS[kind] || EXTERIOR_PRESETS.plaster;
   if (kind === 'wood') return makeSidingMaterial(colorHex || preset.fallbackColor);
   if (kind === 'plaster' || kind === 'painted-plaster') return makeSidingMaterial(colorHex || preset.fallbackColor);
@@ -51,6 +75,9 @@ export function exteriorMaterial(kind = 'plaster', colorHex) {
 }
 
 export function interiorMaterial(kind = 'plaster', colorHex) {
+  return cached(`int:${kind}:${colorHex || ''}`, () => buildInteriorMaterial(kind, colorHex));
+}
+function buildInteriorMaterial(kind, colorHex) {
   const preset = INTERIOR_PRESETS[kind] || INTERIOR_PRESETS.plaster;
   if (kind === 'plaster' || kind === 'ceiling') return makeInteriorPaintMaterial(colorHex || preset.fallbackColor);
   if (kind === 'wood-flooring') return makeFloorMaterial(colorHex || preset.fallbackColor);
@@ -61,22 +88,26 @@ export function interiorMaterial(kind = 'plaster', colorHex) {
 }
 
 export function roofMaterial(kind = 'metal', colorHex) {
-  return makeRoofMaterial(colorHex || (kind === 'metal' ? '#7a5240' : '#8f887c'));
+  return cached(`roof:${kind}:${colorHex || ''}`, () => makeRoofMaterial(colorHex || (kind === 'metal' ? '#7a5240' : '#8f887c')));
 }
 
 export function glazingMaterial() {
-  return new THREE.MeshPhysicalMaterial({
+  return cached('glazing', () => new THREE.MeshPhysicalMaterial({
     color: 0xbfe3ee, roughness: 0.04, metalness: 0.0, transparent: true, opacity: 0.32,
     transmission: 0.65, thickness: 0.02, ior: 1.5,
-  });
+  }));
 }
 
 export function frameMaterial(kind = 'aluminium', colorHex) {
-  if (kind === 'wood') return new THREE.MeshStandardMaterial({ color: new THREE.Color(colorHex || '#6b4a2c'), roughness: 0.55, map: getWoodTexture() });
-  return new THREE.MeshStandardMaterial({ color: new THREE.Color(colorHex || '#5c5f63'), roughness: 0.35, metalness: 0.7 });
+  return cached(`frame:${kind}:${colorHex || ''}`, () => {
+    if (kind === 'wood') return new THREE.MeshStandardMaterial({ color: new THREE.Color(colorHex || '#6b4a2c'), roughness: 0.55, map: getWoodTexture() });
+    return new THREE.MeshStandardMaterial({ color: new THREE.Color(colorHex || '#5c5f63'), roughness: 0.35, metalness: 0.7 });
+  });
 }
 
 export function doorMaterial(kind = 'wood', colorHex) {
-  if (kind === 'metal' || kind === 'garage') return new THREE.MeshStandardMaterial({ color: new THREE.Color(colorHex || '#d9d9d2'), roughness: 0.4, metalness: 0.6 });
-  return new THREE.MeshStandardMaterial({ color: new THREE.Color(colorHex || '#6b4426'), roughness: 0.5, map: getWoodTexture() });
+  return cached(`door:${kind}:${colorHex || ''}`, () => {
+    if (kind === 'metal' || kind === 'garage') return new THREE.MeshStandardMaterial({ color: new THREE.Color(colorHex || '#d9d9d2'), roughness: 0.4, metalness: 0.6 });
+    return new THREE.MeshStandardMaterial({ color: new THREE.Color(colorHex || '#6b4426'), roughness: 0.5, map: getWoodTexture() });
+  });
 }
