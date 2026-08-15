@@ -6,7 +6,18 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { GROUP_LABELS, getShadowTexture, buildBuildingMeshes, buildManualMeshes } from '../three/buildParts';
 import { applySkyBackground, buildOutdoorGround, addDaylight, buildCompoundWall } from '../three/skyEnvironment';
+import { buildBuildingGroup, generateBuildingFromBrief } from '../three/architecture';
 import PartInfoPanel from './PartInfoPanel';
+
+// Phase 1 sample briefs for the new architectural engine — lets you compare
+// the new engine against the legacy box pipeline right now, from the
+// viewer itself, before the AI routes are wired to produce `modelSpec.building`
+// (that's Phase 2: aiService.js prompt/schema redesign).
+const ARCHITECTURE_DEMO_BRIEFS = {
+  bungalow: { name: '3-Bedroom Bungalow', floors: 1, footprint: { width: 12, depth: 9 }, bedrooms: 3, roofType: 'hip', style: 'traditional', features: { porch: true, compoundWall: true, gate: true } },
+  duplex: { name: '4-Bedroom Modern Duplex', floors: 2, footprint: { width: 12, depth: 10 }, setbackPerFloor: [{ width: 10.5, depth: 9 }], bedrooms: 4, roofType: 'flat', style: 'modern', features: { garage: true, compoundWall: true, gate: true } },
+  threeStorey: { name: '3-Storey Modern House', floors: 3, footprint: { width: 13, depth: 10.5 }, setbackPerFloor: [{ width: 11.5, depth: 9.5 }, { width: 10, depth: 8.5 }], bedrooms: 5, roofType: 'flat', style: 'modern', features: { garage: true } },
+};
 
 export default function ModelViewer({ modelSpec, title }) {
   const mountRef = useRef(null);
@@ -31,17 +42,34 @@ export default function ModelViewer({ modelSpec, title }) {
   const transformModeRef = useRef('translate');
   const interiorFillRef = useRef(null);
   const gridRef = useRef(null);
+  // Set by the "New engine demo" buttons below — takes priority over
+  // modelSpec so you can A/B the two pipelines on demand. Once a route
+  // starts sending modelSpec.building (Phase 2+), that flows through the
+  // same architecturalBuilding variable with no further changes here.
+  const [demoBuilding, setDemoBuilding] = useState(null);
+  // Phase 2: Chat -> 3D now sends modelSpec.designBrief (what the building
+  // is) instead of modelSpec.parts (raw box coordinates) for residential
+  // requests. generateBuildingFromBrief is the same deterministic
+  // space-planning engine the demo buttons above use — one engine behind
+  // both paths, per the rebuild spec. Memoized so it's only recomputed
+  // when the brief itself actually changes, not on every render.
+  const briefBuilding = useMemo(() => (
+    modelSpec?.designBrief ? generateBuildingFromBrief(modelSpec.designBrief) : null
+  ), [modelSpec]);
+  const architecturalBuilding = demoBuilding || modelSpec?.building || briefBuilding || null;
 
   const parts = modelSpec?.parts || [];
-  const hasRoof = parts.some(p => p.group === 'roof');
+  const hasRoof = architecturalBuilding ? true : parts.some(p => p.group === 'roof');
   const presentGroups = useMemo(() => {
+    if (architecturalBuilding) return ['structure', 'roof', 'door', 'window', 'interior', 'stair'];
     const seen = new Set(parts.map(p => p.group || 'structure'));
     return ['structure', 'roof', 'door', 'window', 'interior', 'interior-door', 'balcony'].filter(g => seen.has(g));
-  }, [modelSpec]);
+  }, [modelSpec, architecturalBuilding]);
   const presentFloors = useMemo(() => {
+    if (architecturalBuilding) return architecturalBuilding.levels.map(l => l.index);
     const seen = new Set(parts.filter(p => p.group === 'structure' || !p.group).map(p => p.floor ?? 1));
     return [...seen].sort((a, b) => a - b);
-  }, [modelSpec]);
+  }, [modelSpec, architecturalBuilding]);
 
   useEffect(() => {
     setHideRoof(false);
@@ -53,7 +81,14 @@ export default function ModelViewer({ modelSpec, title }) {
     setBuildError(null);
     setStoryView(false);
     setStarted(false);
+    setDemoBuilding(null);
   }, [modelSpec]);
+
+  const runArchitectureDemo = (key) => {
+    setDemoBuilding(generateBuildingFromBrief(ARCHITECTURE_DEMO_BRIEFS[key]));
+    setBuildError(null);
+    setStarted(true);
+  };
 
   useEffect(() => { editModeRef.current = editMode; }, [editMode]);
   useEffect(() => {
@@ -101,23 +136,40 @@ export default function ModelViewer({ modelSpec, title }) {
 
       const group = new THREE.Group();
       groupRef.current = group;
-      const inputParts = parts.length ? parts : [{ type: 'box', size: [1, 1, 1], position: [0, 0.5, 0], material: 'wood', group: 'structure' }];
 
-      // Multi-story support: each structure part may carry a "floor" number
-      // (1 = ground floor, 2 = next up, etc). Every floor's envelope gets
-      // its own independent hollow shell with its own matching door/window
-      // openings — this makes each floor its own selectable, draggable part
-      // in the viewer, so pulling one floor's walls away reveals the rest.
-      //
-      // A "manual" scene (built wall-by-wall in the from-scratch modeler)
-      // carries its own per-wall openings via each opening's `wallId`
-      // rather than one whole-building envelope — detect and branch to the
-      // matching builder so each wall only gets its own doors/windows cut
-      // into it, not every opening in the scene.
-      const isManualScene = inputParts.some(p => p.wallId);
-      const meshes = isManualScene ? buildManualMeshes(inputParts).meshes : buildBuildingMeshes(inputParts);
+      let meshes;
+      if (architecturalBuilding) {
+        // New architectural engine (Phase 1): a real Building IR — levels,
+        // wall segments, room-attached openings, roof from the top
+        // footprint — rather than a flat box list. buildBuildingGroup
+        // already returns a ready-to-add THREE.Group; we flatten its
+        // meshes into meshesRef so recolor/wireframe/story-view/edit-mode
+        // controls below (which iterate meshesRef.current) keep working
+        // unchanged.
+        const { group: archGroup, report } = buildBuildingGroup(architecturalBuilding);
+        if (report.warnings.length) console.warn('[architecture engine] validation warnings:', report.warnings);
+        if (!report.valid) console.error('[architecture engine] validation errors:', report.errors);
+        group.add(archGroup);
+        meshes = [];
+        archGroup.traverse((obj) => { if (obj.isMesh) meshes.push(obj); });
+      } else {
+        const inputParts = parts.length ? parts : [{ type: 'box', size: [1, 1, 1], position: [0, 0.5, 0], material: 'wood', group: 'structure' }];
 
-      meshes.forEach(m => group.add(m));
+        // Multi-story support: each structure part may carry a "floor" number
+        // (1 = ground floor, 2 = next up, etc). Every floor's envelope gets
+        // its own independent hollow shell with its own matching door/window
+        // openings — this makes each floor its own selectable, draggable part
+        // in the viewer, so pulling one floor's walls away reveals the rest.
+        //
+        // A "manual" scene (built wall-by-wall in the from-scratch modeler)
+        // carries its own per-wall openings via each opening's `wallId`
+        // rather than one whole-building envelope — detect and branch to the
+        // matching builder so each wall only gets its own doors/windows cut
+        // into it, not every opening in the scene.
+        const isManualScene = inputParts.some(p => p.wallId);
+        meshes = isManualScene ? buildManualMeshes(inputParts).meshes : buildBuildingMeshes(inputParts);
+        meshes.forEach(m => group.add(m));
+      }
       meshesRef.current = meshes;
       scene.add(group);
 
@@ -320,7 +372,7 @@ export default function ModelViewer({ modelSpec, title }) {
     }
 
     return () => cleanup();
-  }, [modelSpec, started]);
+  }, [modelSpec, started, architecturalBuilding]);
 
   useEffect(() => {
     meshesRef.current.forEach(m => { m.material.wireframe = wireframe; });
@@ -423,6 +475,12 @@ export default function ModelViewer({ modelSpec, title }) {
             The 3D model {hasRoof ? 'loads with the roof on — reveal the interior any time with the button below.' : 'is ready to load.'}
           </p>
           <button className="btn btn-primary" onClick={() => setStarted(true)}>View 3D model</button>
+          <p className="page-sub" style={{ marginTop: 16, fontSize: 12, opacity: 0.75 }}>New architecture engine — Phase 1 preview (not yet wired to Chat/Blueprint/Estate AI):</p>
+          <div className="viewer-controls" style={{ marginTop: 6 }}>
+            <button onClick={() => runArchitectureDemo('bungalow')}>Demo: Bungalow</button>
+            <button onClick={() => runArchitectureDemo('duplex')}>Demo: Duplex</button>
+            <button onClick={() => runArchitectureDemo('threeStorey')}>Demo: 3-Storey</button>
+          </div>
         </div>
       </div>
     );
@@ -431,6 +489,9 @@ export default function ModelViewer({ modelSpec, title }) {
   return (
     <div className="viewer-shell">
       <span className="viewer-tag">3D preview · drag to orbit · tap a part for details</span>
+      {architecturalBuilding && (
+        <span className="viewer-hint">New architecture engine active{architecturalBuilding.name ? ` — ${architecturalBuilding.name}` : ''}</span>
+      )}
       {editMode && (
         <span className="viewer-hint">{selectedLabel ? `Editing: ${selectedLabel} — drag to ${transformMode === 'rotate' ? 'rotate' : 'move'}` : 'Tap a part to select it'}</span>
       )}

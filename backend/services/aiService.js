@@ -801,38 +801,368 @@ function offlineChatReply(message) {
 // Public API
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Blueprint -> DesignBrief (Phase 3): turns the vision reading from
+// detectBlueprintElements() above into a DesignBrief, so an uploaded floor
+// plan goes through the SAME architecture engine as chat/estate instead of
+// its own box-coordinate reconstruction. This is deliberately NOT a second
+// Gemini call — detectBlueprintElements already did the one thing only
+// vision can do (read the drawing); everything here is a deterministic,
+// inspectable classification of that reading, which is more faithful than
+// asking a second model call to re-guess room composition from its own
+// JSON summary of the first.
+// Known limitation (documented, not hidden): this reproduces the drawing's
+// FLOOR COUNT and ROOM COMPOSITION faithfully, but wall positions/room
+// shapes still come from the same procedural space-planner chat uses —
+// true pixel-traced wall geometry (matching the exact drawn layout line for
+// line) is not implemented in this pass. See delivery notes.
+// ---------------------------------------------------------------------------
+function classifyRoom(name) {
+  const n = (name || '').toLowerCase();
+  // Bathroom/ensuite check comes first: "Master Ensuite" or "Master Bath"
+  // would otherwise match the bedroom regex's "master" branch before ever
+  // reaching this check.
+  if (/bath|toilet|w\.?c\.?|ensuite/.test(n)) return 'bathroom';
+  if (/\bbed(room)?\b|master/.test(n)) return 'bedroom';
+  if (/kitchen/.test(n)) return 'kitchen';
+  if (/dining/.test(n)) return 'dining';
+  if (/living|parlor|parlour|sitting/.test(n)) return 'living';
+  if (/lounge|family room/.test(n)) return 'lounge';
+  if (/foyer|entrance|lobby/.test(n)) return 'foyer';
+  if (/garage|carport/.test(n)) return 'garage';
+  if (/\bbq\b|boys.?quarters|staff quarters|servant/.test(n)) return 'bq';
+  if (/balcony|terrace/.test(n)) return 'balcony';
+  if (/porch|veranda|verandah/.test(n)) return 'porch';
+  if (/store|storage|pantry/.test(n)) return 'store';
+  return 'other';
+}
+
+// Only trusts a dimension pair in scaleNote when it's explicitly tied to
+// the word "building"/"overall"/"total" in the same clause — otherwise a
+// labeled room dimension (e.g. "Living Room labeled 4.2m x 5.0m") would get
+// mistaken for the whole building's footprint. Falls back to a room-count
+// based estimate, same formula the chat offline path uses.
+function footprintFromDetected(detected, bedroomCount, floors) {
+  const note = (detected?.scaleNote || '').toLowerCase();
+  const m = note.match(/(?:building|overall|total)[^.]*?(\d+(?:\.\d+)?)\s*m?\s*(?:x|by)\s*(\d+(?:\.\d+)?)\s*m/);
+  if (m) {
+    return { width: clampNumber(m[1], 7, 20, 10), depth: clampNumber(m[2], 6, 18, 9) };
+  }
+  return { width: 9 + bedroomCount * 0.7 + floors * 0.4, depth: 8 + Math.min(floors, 2) * 0.5 };
+}
+
+function designBriefFromBlueprint(detected, notes) {
+  const floors = Math.round(clampNumber(detected?.floors, 1, 4, 1));
+  const rooms = Array.isArray(detected?.rooms) ? detected.rooms : [];
+  const typeCounts = {};
+  rooms.forEach((r) => {
+    const type = classifyRoom(r.name);
+    typeCounts[type] = (typeCounts[type] || 0) + 1;
+  });
+  const bedrooms = clampNumber(typeCounts.bedroom || 0, 1, 10, 3);
+  const bathrooms = clampNumber(typeCounts.bathroom || 0, 1, 8, Math.max(1, Math.ceil(bedrooms / 2)));
+
+  // Style/roof aren't things a vision read of room labels can determine —
+  // pull from the architect's notes with the same heuristic chat uses, so
+  // "traditional 4-bedroom bungalow, hip roof" typed alongside the upload
+  // still lands correctly, and default to a plain, neutral guess otherwise.
+  const notesBrief = offlineDesignBrief(notes || '');
+  const style = /modern|contemporary|minimalist|luxury|traditional|nigerian|mediterranean|colonial|tropical|industrial|scandinavian/i.test(notes || '')
+    ? notesBrief.style : 'traditional';
+  const roofType = /flat roof|mono[-\s]?pitch|gable|hip roof/i.test(notes || '') ? notesBrief.roofType : (style === 'modern' ? 'flat' : 'hip');
+
+  return clampDesignBrief({
+    floors,
+    footprint: footprintFromDetected(detected, bedrooms, floors),
+    bedrooms,
+    bathrooms,
+    roofType,
+    style,
+    features: {
+      garage: !!typeCounts.garage,
+      bq: !!typeCounts.bq,
+      balcony: !!typeCounts.balcony || !!detected?.stairs,
+      porch: !!typeCounts.porch,
+      compoundWall: /compound wall|perimeter fence|estate/i.test(notes || ''),
+      gate: /security gate|\bgate\b/i.test(notes || ''),
+    },
+  }, null);
+}
+
+function descriptiveTextFromBlueprint(brief, detected) {
+  const base = offlineDescriptiveText(brief);
+  const uncertainNote = Array.isArray(detected?.uncertain) && detected.uncertain.length
+    ? ` Some parts of the drawing were unclear: ${detected.uncertain.slice(0, 2).join('; ')}.`
+    : '';
+  return {
+    ...base,
+    summary: `Read from your uploaded drawing: ${base.summary}${uncertainNote}`,
+  };
+}
+
 async function analyzeBlueprint({ base64, mimeType, fileName, notes }) {
   if (genAI) {
-    let detected = null;
     try {
-      detected = await detectBlueprintElements({ base64, mimeType, notes });
-    } catch (err) {
-      console.error('Blueprint element detection failed, generating without a grounded reading:', err.message);
-    }
-
-    try {
-      const groundedText = detected
-        ? `You are a professional architect's assistant. You already read this exact drawing and identified the following elements on it:\n${JSON.stringify(detected)}\nNow reconstruct it as an accurate to-scale 3D design that matches EXACTLY what you identified above: one "structure" envelope per floor listed, one partitioned, named "interior" room (with a connecting "interior-door" opening) for every entry in "rooms", one opening for every entry in "doors" (a door described as an entrance/exterior becomes group "door"; a door described as connecting two named rooms becomes group "interior-door"), and one "window" opening for every entry in "windows". Look at the image again for the real proportions, wall positions, and which rooms are actually adjacent to each other — position everything to match the actual layout shown, don't arrange rooms arbitrarily. Do not add rooms, doors, or windows beyond what was identified above unless the notes below ask for something extra.`
-        : `You are a professional architect's assistant. The uploaded image is likely a floor plan, blueprint, elevation drawing, or a photo of a building/structure. Read any labeled dimensions, room names, wall lines, door/window markers, and scale indicators as precisely as possible, and reconstruct them as an accurate to-scale 3D design — prioritize matching the real proportions and layout shown over creative interpretation. Do not invent furniture or decor that isn't indicated in the source.`;
-      const parts = [
-        { text: `${groundedText} ${notes ? `Architect's notes: ${notes}.` : ''}\n${schemaInstructions()}` },
-        { inlineData: { mimeType, data: base64 } },
-      ];
-      const text = await callGemini(parts);
-      const json = reinforceDesign(JSON.parse(stripFences(text)));
-      return { ...json, detected, engine: 'gemini' };
+      const detected = await detectBlueprintElements({ base64, mimeType, notes });
+      const brief = designBriefFromBlueprint(detected, notes);
+      const text = descriptiveTextFromBlueprint(brief, detected);
+      return {
+        ...text,
+        category: brief.floors > 1 ? 'duplex' : 'house',
+        modelSpec: { designBrief: brief },
+        detected,
+        engine: 'gemini',
+      };
     } catch (err) {
       console.error('Gemini blueprint analysis failed, falling back to offline engine:', err.message);
     }
   }
-  const offline = offlineDesign(notes, fileName);
-  return { ...offline, detected: detectedFromOffline(offline), engine: 'offline' };
+  const brief = offlineDesignBrief(notes || fileName || '');
+  const text = offlineDescriptiveText(brief);
+  return {
+    ...text,
+    category: brief.floors > 1 ? 'duplex' : 'house',
+    modelSpec: { designBrief: brief },
+    detected: detectedFromOfflineBrief(brief),
+    engine: 'offline',
+  };
+}
+
+// Offline-engine "what we detected" panel content for the new brief-based
+// path — mirrors detectedFromOffline() above (which describes the legacy
+// template's parts) but describes a DesignBrief instead, and is equally
+// explicit that no real image reading happened.
+function detectedFromOfflineBrief(brief) {
+  return {
+    source: 'offline',
+    floors: brief.floors,
+    scaleNote: 'No live AI connection was available, so this drawing was not actually read — room counts were estimated instead.',
+    rooms: [{ name: `${brief.bedrooms} bedroom(s), ${brief.bathrooms} bathroom(s)`, floor: 1, notes: 'estimated, not read from your drawing' }],
+    walls: { exterior: 4, interior: brief.bedrooms + brief.bathrooms, notes: 'estimated' },
+    doors: [], windows: [],
+    stairs: brief.floors > 1,
+    uncertain: ['This project ran on the offline engine — connect a Gemini API key for the AI to actually read your uploaded drawing.'],
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Architectural DesignBrief contract — Phase 2 of the architecture-engine
+// rebuild, used for residential building requests (category 'house' or
+// 'duplex'). This replaces the box-coordinate schemaInstructions() contract
+// above for those requests: Gemini describes WHAT the building is (floors,
+// bedrooms, roof type, style, features), and the deterministic
+// space-planning engine (frontend/src/three/architecture/
+// designBriefToBuilding.js -> generateBuildingFromBrief) decides HOW to
+// turn that into wall coordinates, room polygons, openings, stairs and
+// roof geometry — Gemini never invents raw 3D coordinates. Furniture and
+// non-residential categories (table, shelving, seating, cabinet,
+// outdoor-structure, frame, generic) are unaffected and still use
+// schemaInstructions()/parts below.
+// ---------------------------------------------------------------------------
+const ROOF_TYPES = ['hip', 'gable', 'flat', 'mono'];
+const STYLES = ['modern', 'contemporary', 'minimalist', 'luxury', 'traditional', 'nigerian modern residential', 'mediterranean', 'colonial', 'tropical', 'industrial', 'scandinavian'];
+
+function designBriefSchemaInstructions() {
+  return `
+Respond with ONLY valid JSON (no markdown fences, no commentary) matching exactly this shape:
+{
+  "title": "short project name",
+  "summary": "2-3 sentence plain-language description of the design",
+  "dimensions": [ {"label":"Bedrooms","value":"4"}, {"label":"Floors","value":"2"}, {"label":"Footprint","value":"12m x 10m"} ],
+  "materials": [ {"name":"Painted plaster render","purpose":"exterior finish"}, ... 4-8 items ],
+  "equipment": [ {"name":"Concrete mixer","note":"foundation and slab work"}, ... 4-8 items ],
+  "steps": [ "short build step 1", "short build step 2", ... 4-6 items ],
+  "designBrief": {
+    "name": "short building name",
+    "floors": 1,
+    "floorHeight": 3.0,
+    "footprint": { "width": 12, "depth": 10 },
+    "setbackPerFloor": [ {"width": 10.5, "depth": 9} ],
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "roofType": "hip",
+    "style": "modern",
+    "features": { "garage": false, "balcony": false, "porch": false, "compoundWall": false, "gate": false, "bq": false }
+  }
+}
+Rules for "designBrief" — this describes WHAT the building is; the application's own geometry engine derives all wall coordinates, room shapes, window/door placement, stair geometry and roof planes from it automatically, so do NOT invent any of that yourself and do NOT include a "modelSpec.parts" field:
+- "floors": 1 for a bungalow/cottage/single-storey home. 2 for a duplex/two-storey home. 3 or 4 only if the brief explicitly says three-storey/four-storey/three floors/four floors etc. Never invent extra floors the person didn't ask for.
+- "footprint": choose realistic metres for the bedroom count and floor count — roughly 9x8 for 2-3 bedrooms, 11x9 for 3-4 bedrooms, 13x10+ for 5+ bedrooms or 2+ floors. Keep width/depth between 7 and 20 metres.
+- "setbackPerFloor": an array with one entry per floor ABOVE the first (so a 2-floor building has at most 1 entry, a 3-floor building at most 2). Only include entries if the brief asks for upper-floor setback, a smaller top floor, or stepped/contemporary massing — leave it an empty array for an ordinary duplex where every floor shares the same footprint. Each entry's width/depth must be smaller than the floor below it.
+- "bedrooms"/"bathrooms": read directly from the brief; default bathrooms to roughly half the bedroom count (minimum 1) if not mentioned.
+- "roofType": one of ${ROOF_TYPES.join(' | ')}. Prefer "flat" or "mono" for modern/contemporary/minimalist/industrial styles unless the brief asks for something else; prefer "hip" or "gable" for traditional/colonial/Nigerian modern residential/Mediterranean/tropical styles.
+- "style": one of ${STYLES.join(' | ')} — pick whichever the brief most resembles, defaulting to "modern" if nothing suggests otherwise.
+- "features": set "garage" true only if a garage or carport is mentioned; "bq" true only if BQ/boys' quarters/staff quarters is mentioned; "balcony"/"porch" true only if actually mentioned or clearly implied by the style; "compoundWall"/"gate" true only if a perimeter fence/security gate/estate context is mentioned.
+The "title"/"summary"/"dimensions"/"materials"/"equipment"/"steps" fields are free-form descriptive text for the person reading the proposal — keep them accurate to the designBrief you produced (e.g. don't describe a garage in "summary" if "features.garage" is false).
+`.trim();
+}
+
+function clampNumber(v, min, max, fallback) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+// Defensive clamp on whatever Gemini returns, independent of the fuller
+// validateBuilding()/autoRepairBuilding() pass the frontend's architecture
+// engine runs again at render time (section 23 of the rebuild spec calls
+// for validation at both the AI-output boundary and the geometry boundary,
+// not just one or the other).
+function clampDesignBrief(raw, fallbackName) {
+  const b = raw || {};
+  const floors = Math.round(clampNumber(b.floors, 1, 4, 1));
+  const footprint = {
+    width: clampNumber(b.footprint?.width, 7, 20, 10),
+    depth: clampNumber(b.footprint?.depth, 6, 18, 9),
+  };
+  const setbackPerFloor = Array.isArray(b.setbackPerFloor)
+    ? b.setbackPerFloor.slice(0, Math.max(0, floors - 1)).map((s, i) => {
+      const prevW = i === 0 ? footprint.width : clampNumber(b.setbackPerFloor[i - 1]?.width, 5, 20, footprint.width);
+      const prevD = i === 0 ? footprint.depth : clampNumber(b.setbackPerFloor[i - 1]?.depth, 5, 18, footprint.depth);
+      return {
+        width: clampNumber(s?.width, 5, prevW, prevW),
+        depth: clampNumber(s?.depth, 4, prevD, prevD),
+      };
+    })
+    : [];
+  const roofType = ROOF_TYPES.includes(b.roofType) ? b.roofType : 'hip';
+  const style = STYLES.includes((b.style || '').toLowerCase()) ? b.style.toLowerCase() : 'modern';
+  const bedrooms = Math.round(clampNumber(b.bedrooms, 1, 10, 3));
+  const bathrooms = Math.round(clampNumber(b.bathrooms, 1, 8, Math.max(1, Math.ceil(bedrooms / 2))));
+  const f = b.features || {};
+  return {
+    name: (typeof b.name === 'string' && b.name.trim()) || fallbackName || `${bedrooms}-Bedroom ${floors === 1 ? 'Bungalow' : floors === 2 ? 'Duplex' : `${floors}-Storey House`}`,
+    floors,
+    floorHeight: clampNumber(b.floorHeight, 2.6, 3.6, 3.0),
+    footprint,
+    setbackPerFloor,
+    bedrooms,
+    bathrooms,
+    roofType,
+    style,
+    features: {
+      garage: !!f.garage, balcony: !!f.balcony, porch: !!f.porch,
+      compoundWall: !!f.compoundWall, gate: !!f.gate, bq: !!f.bq,
+    },
+  };
+}
+
+// Offline fallback: no Gemini key, or Gemini failed. Parses the same
+// signals a person would read off the message by eye (bedroom count,
+// duplex/storey wording, garage/pool/BQ mentions, style keywords) into a
+// DesignBrief so the offline engine still produces a real multi-room,
+// multi-storey-capable building rather than reverting to a flat template
+// box (section 31 of the rebuild spec).
+function offlineDesignBrief(message) {
+  const t = (message || '').toLowerCase();
+  const bedroomMatch = t.match(/(\d+)\s*[-\s]?(?:bed|bedroom)/);
+  const bedrooms = bedroomMatch ? clampNumber(bedroomMatch[1], 1, 10, 3) : 3;
+  const bathroomMatch = t.match(/(\d+)\s*[-\s]?(?:bath|bathroom)/);
+
+  let floors = 1;
+  if (/\b(three|3)[-\s]?(storey|story|floor)/.test(t)) floors = 3;
+  else if (/\b(four|4)[-\s]?(storey|story|floor)/.test(t)) floors = 4;
+  else if (/duplex|two[-\s]?stor(e|y)|2[-\s]?stor(e|y)|multi[-\s]?stor(e|y)|upstairs|penthouse|triplex/.test(t)) floors = 2;
+  else if (/bungalow|single[-\s]?stor(e|y)|one[-\s]?stor(e|y)/.test(t)) floors = 1;
+
+  const style = STYLES.find((s) => t.includes(s)) || (/modern|contemporary/.test(t) ? 'modern' : /traditional|colonial/.test(t) ? 'traditional' : 'modern');
+  const roofType = /flat roof/.test(t) ? 'flat' : /mono[-\s]?pitch/.test(t) ? 'mono' : /gable/.test(t) ? 'gable' : /hip roof/.test(t) ? 'hip'
+    : (style === 'modern' || style === 'contemporary' || style === 'minimalist' || style === 'industrial') ? 'flat' : 'hip';
+
+  return clampDesignBrief({
+    floors,
+    footprint: { width: 9 + bedrooms * 0.7 + floors * 0.4, depth: 8 + Math.min(floors, 2) * 0.5 },
+    bedrooms,
+    bathrooms: bathroomMatch ? Number(bathroomMatch[1]) : undefined,
+    roofType,
+    style,
+    features: {
+      garage: /garage|carport/.test(t),
+      balcony: /balcony/.test(t) || floors > 1,
+      porch: /porch|veranda|verandah/.test(t),
+      compoundWall: /compound wall|perimeter fence|estate/.test(t),
+      gate: /security gate|\bgate\b/.test(t),
+      bq: /\bbq\b|boys.?quarters|staff quarters|servant.?quarters/.test(t),
+    },
+  }, null);
+}
+
+function offlineDescriptiveText(brief) {
+  const title = `${brief.bedrooms}-Bedroom ${brief.floors > 1 ? (brief.floors === 2 ? 'Duplex' : `${brief.floors}-Storey House`) : 'Bungalow'}`;
+  const summary = `A ${brief.style} ${brief.floors > 1 ? `${brief.floors}-storey` : 'single-storey'} home with ${brief.bedrooms} bedroom${brief.bedrooms === 1 ? '' : 's'} and ${brief.bathrooms} bathroom${brief.bathrooms === 1 ? '' : 's'}, a ${brief.roofType} roof${brief.features.garage ? ', an attached garage' : ''}${brief.features.balcony ? ', a balcony' : ''}${brief.features.bq ? ', and a BQ' : ''}.`;
+  return {
+    title,
+    summary,
+    dimensions: [
+      { label: 'Bedrooms', value: String(brief.bedrooms) },
+      { label: 'Floors', value: String(brief.floors) },
+      { label: 'Footprint', value: `${brief.footprint.width.toFixed(1)}m x ${brief.footprint.depth.toFixed(1)}m` },
+    ],
+    materials: [
+      { name: 'Painted plaster render', purpose: 'exterior finish' },
+      { name: 'Reinforced concrete', purpose: 'slab and structural frame' },
+      { name: 'Aluminium window frames', purpose: 'glazing' },
+      { name: brief.roofType === 'flat' ? 'Waterproofed concrete roof deck' : 'Aluminium roofing sheets', purpose: 'roof covering' },
+    ],
+    equipment: [
+      { name: 'Concrete mixer', note: 'foundation and slab work' },
+      { name: 'Scaffolding', note: 'wall and roof construction' },
+      { name: 'Level and theodolite', note: 'site setting out' },
+    ],
+    steps: ['Site clearing and setting out', 'Foundation and ground slab', 'Wall construction', 'Roofing', 'Windows, doors and finishes'],
+  };
+}
+
+async function chatDesignArchitectural({ message, convo }) {
+  if (genAI) {
+    try {
+      const parts = [
+        { text: `You are a professional architectural design assistant embedded in an app called Arch-3d build. A user is describing a residential building they want designed. Conversation so far:\n${convo}\nUser: ${message}\n\n${designBriefSchemaInstructions()}` },
+      ];
+      const text = await callGemini(parts);
+      const json = JSON.parse(stripFences(text));
+      const brief = clampDesignBrief(json.designBrief, json.title);
+      return {
+        reply: json.title ? `Here's a concept for "${json.title}".` : 'Here is a concept based on your description.',
+        result: {
+          title: json.title || brief.name,
+          category: brief.floors > 1 ? 'duplex' : 'house',
+          summary: json.summary || '',
+          dimensions: Array.isArray(json.dimensions) ? json.dimensions : [],
+          materials: Array.isArray(json.materials) ? json.materials : [],
+          equipment: Array.isArray(json.equipment) ? json.equipment : [],
+          steps: Array.isArray(json.steps) ? json.steps : [],
+          modelSpec: { designBrief: brief },
+          engine: 'gemini',
+        },
+      };
+    } catch (err) {
+      console.error('Gemini architectural chat design failed, falling back to offline engine:', err.message);
+    }
+  }
+  const brief = offlineDesignBrief(message);
+  const text = offlineDescriptiveText(brief);
+  return {
+    reply: `Here's a concept for "${text.title}" based on what you described — an editable 3D preview built by the architectural engine is on the right. Tell me what to change (room count, floors, style, features) and I'll refine it.`,
+    result: { ...text, category: brief.floors > 1 ? 'duplex' : 'house', modelSpec: { designBrief: brief }, engine: 'offline' },
+  };
 }
 
 async function chatDesign({ message, history }) {
+  const convo = (history || []).map(h => `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.content}`).join('\n');
+  const localCategory = detectCategory(message) || detectCategory(convo) || 'house';
+
+  // Residential building requests go through the new architecture engine
+  // (Phase 2): Gemini produces a DesignBrief, not raw box coordinates.
+  // Furniture/outdoor-structure/frame/generic requests are unrelated to
+  // the architecture rebuild and keep using the legacy parts pipeline.
+  if (localCategory === 'house' || localCategory === 'duplex') {
+    return chatDesignArchitectural({ message, convo });
+  }
+
   if (genAI) {
     try {
-      const convo = (history || []).map(h => `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.content}`).join('\n');
       const parts = [
         { text: `You are a professional architectural design assistant embedded in an app called Arch-3d build. A user is describing a building or space they want designed. Conversation so far:\n${convo}\nUser: ${message}\n\n${schemaInstructions()}` },
       ];
@@ -961,34 +1291,83 @@ All numbers are plain numbers in the chosen local currency, no symbols or commas
 // or ignore the site boundary, a procedural one cannot.
 // ---------------------------------------------------------------------------
 
-async function generateEstateBuilding({ description, index, total }) {
+// Parses explicit building-mix instructions out of an estate brief, e.g.
+// "8 houses: four 3-bedroom bungalows and four 4-bedroom duplexes" ->
+// [ {bedrooms:3,floors:1} x4, {bedrooms:4,floors:2} x4 ]. Returns null if
+// nothing confidently parses, so callers fall back to per-building
+// variation instead of guessing at a mix that wasn't actually specified.
+const WORD_NUM = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+const NUM_WORD = '(\\d+|one|two|three|four|five|six|seven|eight|nine|ten)';
+function parseEstateMix(description, totalCount) {
+  const text = (description || '').toLowerCase();
+  const segments = text.split(/\band\b|,|;/);
+  const items = [];
+  // The count for each segment must sit right next to that segment's own
+  // dwelling type (e.g. "four 3-bedroom bungalows"), not just anywhere in
+  // the segment — otherwise a leading "8 houses: four bungalows and four
+  // duplexes" picks up the overall total (8) as this segment's count
+  // instead of "four", and the second type never gets built.
+  const pattern = new RegExp(`${NUM_WORD}\\s+(?:(\\d+)\\s*[-\\s]?bed(?:room)?s?\\s+)?(?:[a-z-]+\\s+){0,2}(bungalow|duplex|triplex|two[-\\s]?stor\\w*|single[-\\s]?stor\\w*)`);
+  for (const seg of segments) {
+    const m = seg.match(pattern);
+    if (!m) continue;
+    const n = /^\d+$/.test(m[1]) ? Number(m[1]) : WORD_NUM[m[1]];
+    if (!n) continue;
+    const isDuplex = /duplex|two[-\s]?stor|triplex/.test(m[3]);
+    items.push({ count: n, bedrooms: m[2] ? Number(m[2]) : null, floors: isDuplex ? 2 : 1 });
+  }
+  if (!items.length) return null;
+  const queue = [];
+  items.forEach((it) => { for (let i = 0; i < it.count; i++) queue.push({ bedrooms: it.bedrooms, floors: it.floors }); });
+  while (queue.length < totalCount) queue.push(queue[queue.length % queue.length]);
+  return queue.slice(0, totalCount);
+}
+
+async function generateEstateBuilding({ description, index, total, override }) {
+  const overrideNote = override
+    ? ` This specific building (building ${index}) MUST be a ${override.bedrooms ? `${override.bedrooms}-bedroom ` : ''}${override.floors > 1 ? 'duplex/multi-storey home' : 'single-storey bungalow'} — that part of the estate brief is not optional, follow it exactly.`
+    : '';
   if (genAI) {
     try {
-      const variation = `This is building ${index} of ${total} in a residential estate/compound. Estate brief: "${description}". Give this specific building its own distinct footprint, room count, and roofline appropriate to the brief — vary its size/bedroom count/style slightly from a "typical" building matching the brief so the estate doesn't look like ${total} identical clones, while staying consistent with the overall estate description and any per-house instructions in it (e.g. "houses 2-5 should be 3-bedroom duplexes").`;
-      const parts = [{ text: `You are a professional architectural design assistant generating ONE building within a larger estate project.\n${variation}\n\n${schemaInstructions()}` }];
+      const variation = `This is building ${index} of ${total} in a residential estate/compound. Estate brief: "${description}".${overrideNote} Otherwise, give this specific building its own distinct bedroom count/style/features appropriate to the brief — vary it from a "typical" building matching the brief so the estate doesn't look like ${total} identical clones, while staying consistent with the overall estate description.`;
+      const parts = [{ text: `You are a professional architectural design assistant generating ONE building within a larger estate project.\n${variation}\n\n${designBriefSchemaInstructions()}` }];
       const text = await callGemini(parts);
-      const json = reinforceDesign(JSON.parse(stripFences(text)));
-      return { ...json, engine: 'gemini' };
+      const json = JSON.parse(stripFences(text));
+      const brief = clampDesignBrief(
+        override ? { ...json.designBrief, bedrooms: override.bedrooms ?? json.designBrief?.bedrooms, floors: override.floors ?? json.designBrief?.floors } : json.designBrief,
+        json.title,
+      );
+      return {
+        title: json.title || brief.name,
+        category: brief.floors > 1 ? 'duplex' : 'house',
+        summary: json.summary || '',
+        dimensions: Array.isArray(json.dimensions) ? json.dimensions : [],
+        materials: Array.isArray(json.materials) ? json.materials : [],
+        modelSpec: { designBrief: brief },
+        engine: 'gemini',
+      };
     } catch (err) {
-      console.error(`Estate building ${index}/${total} generation failed, using offline template:`, err.message);
+      console.error(`Estate building ${index}/${total} generation failed, using offline procedural brief:`, err.message);
     }
   }
-  // Offline fallback: cycle a house template with a per-index scale variation
-  // so buildings in the estate are still visually distinguishable from
-  // each other, clearly labeled as offline/procedural (never claimed as AI).
-  const offline = offlineDesign(description, '');
-  const scale = 0.82 + ((index - 1) % 5) * 0.09;
-  const scaled = JSON.parse(JSON.stringify(offline));
-  scaled.title = `${offline.title} (variant ${index})`;
-  scaled.modelSpec.parts = (scaled.modelSpec.parts || []).map(p => ({
-    ...p,
-    size: p.size ? p.size.map(v => v * scale) : p.size,
-    radiusTop: p.radiusTop != null ? p.radiusTop * scale : p.radiusTop,
-    radiusBottom: p.radiusBottom != null ? p.radiusBottom * scale : p.radiusBottom,
-    height: p.type === 'cylinder' && p.height != null ? p.height * scale : p.height,
-    position: p.position ? p.position.map(v => v * scale) : p.position,
-  }));
-  return { ...scaled, engine: 'offline' };
+  // Offline fallback: derive a brief from the estate description with the
+  // same heuristic parser chat uses, then apply the parsed mix override (if
+  // any) or a deterministic per-index bedroom-count variation so an estate
+  // of N houses is never N identical clones even with no AI available.
+  const base = offlineDesignBrief(description);
+  const bedrooms = override?.bedrooms ?? clampNumber(base.bedrooms + (((index - 1) % 3) - 1), 1, 10, base.bedrooms);
+  const floors = override?.floors ?? base.floors;
+  const brief = clampDesignBrief({ ...base, bedrooms, floors, name: null }, null);
+  const text = offlineDescriptiveText(brief);
+  return {
+    title: `${text.title} (House ${index})`,
+    category: brief.floors > 1 ? 'duplex' : 'house',
+    summary: text.summary,
+    dimensions: text.dimensions,
+    materials: text.materials,
+    modelSpec: { designBrief: brief },
+    engine: 'offline',
+  };
 }
 
 // Small bounded-concurrency helper — keeps several Gemini calls in flight
@@ -1010,7 +1389,15 @@ async function mapWithConcurrency(items, limit, fn) {
 // Reads each building's own generated geometry to get its real footprint
 // (bounding box in the X/Z plane), rather than assuming a fixed lot size —
 // so the procedural layout below fits the buildings that actually exist.
+// A designBrief-based building carries its footprint directly (plus any
+// per-floor setback, which can only ever be smaller than the ground floor,
+// so the ground-floor footprint is always the widest); the legacy parts
+// pipeline still gets its footprint by scanning part bounding boxes.
 function computeFootprint(modelSpec) {
+  if (modelSpec?.designBrief) {
+    const { width, depth } = modelSpec.designBrief.footprint || { width: 10, depth: 8 };
+    return { width: Math.max(width, 3), depth: Math.max(depth, 3) };
+  }
   const parts = modelSpec?.parts || [];
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
   parts.forEach(p => {
@@ -1064,8 +1451,13 @@ function layoutEstate(buildings, siteWidth, siteDepth) {
 async function generateEstate({ description, buildingCount, siteWidth, siteDepth }) {
   const count = Math.max(1, Math.min(10, Number(buildingCount) || 4));
   const indices = Array.from({ length: count }, (_, i) => i + 1);
+  // "8 houses: four 3-bedroom bungalows and four 4-bedroom duplexes" (test
+  // case 6 of the rebuild spec) needs an explicit per-building mix, not
+  // per-building AI improvisation — parse it once up front so every
+  // building request carries the exact override it must follow.
+  const mix = parseEstateMix(description, count);
   const buildingResults = await mapWithConcurrency(indices, 3, (i) =>
-    generateEstateBuilding({ description, index: i, total: count })
+    generateEstateBuilding({ description, index: i, total: count, override: mix ? mix[i - 1] : null })
   );
 
   const { positions, site } = layoutEstate(buildingResults, Number(siteWidth) || 60, Number(siteDepth) || 60);

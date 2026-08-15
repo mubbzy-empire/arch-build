@@ -6,6 +6,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { GROUP_LABELS, getShadowTexture, buildBuildingMeshes } from '../three/buildParts';
 import { applySkyBackground, buildOutdoorGround, addDaylight, buildCompoundWall } from '../three/skyEnvironment';
+import { buildBuildingGroup, generateBuildingFromBrief } from '../three/architecture';
 import PartInfoPanel from './PartInfoPanel';
 
 // Renders an entire estate/compound: a ground plane sized to the site, a
@@ -125,8 +126,24 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
         bGroup.rotation.y = b.rotation || 0;
         bGroup.userData.originalPosition = bGroup.position.clone();
         bGroup.userData.originalRotationY = bGroup.rotation.y;
-        const meshes = buildBuildingMeshes(b.modelSpec?.parts || []);
-        meshes.forEach(m => bGroup.add(m));
+        // Phase 3: a building generated through the new architecture
+        // engine carries modelSpec.designBrief instead of modelSpec.parts —
+        // same buildBuildingGroup()/generateBuildingFromBrief() pair the
+        // single-building viewer uses, so an estate house is a real
+        // building with its own footprint/floors/roof, not a box.
+        let meshes;
+        if (b.modelSpec?.designBrief) {
+          const building = generateBuildingFromBrief(b.modelSpec.designBrief);
+          const { group: archGroup, report } = buildBuildingGroup(building);
+          if (report.warnings.length) console.warn(`[architecture engine] ${b.name}:`, report.warnings);
+          if (!report.valid) console.error(`[architecture engine] ${b.name}:`, report.errors);
+          bGroup.add(archGroup);
+          meshes = [];
+          archGroup.traverse((obj) => { if (obj.isMesh) meshes.push(obj); });
+        } else {
+          meshes = buildBuildingMeshes(b.modelSpec?.parts || []);
+          meshes.forEach(m => bGroup.add(m));
+        }
         bGroup.userData.buildingId = b.id;
         bGroup.userData.buildingName = b.name;
         root.add(bGroup);
