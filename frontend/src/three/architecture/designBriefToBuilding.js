@@ -296,7 +296,14 @@ function addWindowsAndDoors(walls, rooms, floorIndex, isGroundFloor) {
   });
 
   // Entrance door on the foyer's (or lounge's, upper floor) exterior wall.
-  const entranceRoom = rooms.foyer || rooms.lounge;
+  // Entrance door only belongs on the ground floor. Without this check,
+  // every upper floor fell through to `rooms.lounge` (there's no foyer
+  // above ground level) and got a phantom "entrance door" stacked at the
+  // exact same position as that room's own window — two overlapping CSG
+  // cutter boxes subtracted from the same wall, which is exactly the kind
+  // of degenerate case that corrupts geometry (this produced the "walls
+  // extending far beyond the house" symptom).
+  const entranceRoom = isGroundFloor ? rooms.foyer : null;
   if (entranceRoom) {
     const roomWalls = wallsByRoom.get(entranceRoom.name) || [];
     const extWall = roomWalls.find((w) => w.type === 'exterior');
